@@ -1,5 +1,10 @@
 # Contributing
 
+The original author is not planning further updates. Community contributions and
+independent forks are welcome under the MIT license. Review, merging and future
+releases depend on maintainer availability; no response time is promised. This
+repository has not been transferred to a new maintainer.
+
 Start with a focused issue describing the problem, Windows build, GPU driver,
 recording settings, and steps to reproduce. Remove personal paths and screen
 content from any reports. Do not upload a recording containing private material.

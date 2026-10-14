@@ -145,8 +145,7 @@ decimal points for reproducible downstream numeric parsing.
 - All new recordings used capture-border suppression through Windows' supported API
   without initialization failure. No claim is made about unsupported older builds.
 
-Audio tests are local and excluded from Git. Test playback was stopped when requested;
-subsequent checks did not play audio. Reference recordings are never release assets.
+Audio tests are local and excluded from Git. Reference recordings are never release assets.
 
 ## Not yet validated
 

@@ -11,9 +11,11 @@ available. Otherwise open an issue containing a minimal description and ask for 
 private channel before sharing exploit details. Never include credentials, private
 screen recordings, or personal data in a public issue.
 
-Only the current development branch is receiving fixes. No production support or
-security audit is claimed. Forced termination, power loss and full disks can leave
-an incomplete `.partial.mp4`; FeatherRec retains it instead of calling it successful.
+There is no actively maintained release, and the original author is not planning
+further updates. Security patches and report response times are not guaranteed.
+No production support or security audit is claimed. Forced termination, power loss
+and full disks can leave an incomplete `.partial.mp4`; FeatherRec retains it instead
+of calling it successful.
 
 Settings and reports are plaintext local files. They may contain output paths and
 hardware encoder names and audio-device identifiers. Review them before sharing.

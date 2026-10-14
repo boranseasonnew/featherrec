@@ -10,6 +10,13 @@ accounts, advertisements, analytics, or cloud processing.
 milestone, not a production-ready OBS replacement. There are no OBS comparison
 results and no claim that FeatherRec is faster or uses fewer resources than OBS.
 
+**Maintenance: community contributions and forks are welcome.** The original author
+is not planning further updates. No maintainer response, fixes, security patches or
+future releases are guaranteed. The source, build instructions and tests remain
+available for anyone who wants to continue development under the MIT license.
+
+[Download the latest published Windows build](https://github.com/boranseasonnew/featherrec/releases/tag/v0.1.0).
+
 ![FeatherRec desktop interface](assets/screenshot.png)
 
 ## Implemented
@@ -171,7 +178,10 @@ physical capture/encoding functionality. Read [architecture](docs/architecture.m
 for ownership and timing, [validation notes](docs/validation.md) for observed results,
 and [the benchmark procedure](benchmarks/README.md) for a fair OBS comparison.
 
-## Roadmap
+## Community development opportunities
+
+These are open areas for contributors, not a release schedule or commitments from
+the original author.
 
 1. Expand real-driver testing across AMD, Intel and NVIDIA, Windows 10/11, multiple
    monitors, disconnects, resolution changes, full disks and longer sessions.
@@ -182,7 +192,7 @@ and [the benchmark procedure](benchmarks/README.md) for a fair OBS comparison.
 4. Preserve aspect ratio, add stronger session/driver recovery, and refine encoder
    diagnostics and independently verified software fallback.
 5. Optional tray/history and better packaging. MKV only with a reliable muxer.
-6. Publish official portable releases after the recording test matrix passes.
+6. Expand the recording test matrix before publishing stable portable releases.
 
 ## Contribute and license
 
