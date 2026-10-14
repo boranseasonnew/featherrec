@@ -67,7 +67,7 @@ fn dimensions(w: u32, h: u32) -> u64 {
     (u64::from(w) << 32) | u64::from(h)
 }
 
-fn media_path(path: &Path) -> Vec<u16> {
+pub(crate) fn media_path(path: &Path) -> Vec<u16> {
     // SourceReader interprets Rust's canonical \\?\ prefix as a network URL.
     // Preserve Unicode while converting extended drive/UNC paths to Win32 paths.
     let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -113,7 +113,7 @@ impl Encoder {
             let attrs = attrs.unwrap();
             attrs.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &manager)?;
             attrs.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
-            attrs.SetUINT32(&MF_LOW_LATENCY, 1)?;
+            attrs.SetUINT32(&MF_LOW_LATENCY, u32::from(settings.low_latency))?;
             // Keep SinkWriter throttling enabled. Only the encoding worker may wait.
             let wide = media_path(path);
             let writer = MFCreateSinkWriterFromURL(PCWSTR(wide.as_ptr()), None, &attrs)

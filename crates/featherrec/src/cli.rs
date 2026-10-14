@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use recorder_core::{EncoderPolicy, Metrics, Preset, Settings};
+use recorder_core::{EncoderPolicy, Metrics, Preset, Settings, SystemAudio};
 use std::{
     sync::{
         Arc, Mutex,
@@ -23,7 +23,7 @@ fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|v| v == "--help" || v == "-h") {
         println!(
-            "FeatherRec 0.1.0\n\nfeatherrec-cli --diagnose\nfeatherrec-cli --record --seconds 10 [--output DIR] [--monitor 1]\n    [--preset potato|balanced|quality] [--resolution 720|1080]\n    [--fps 30|60] [--bitrate 4000000] [--allow-software] [--no-cursor]\n\nVideo-only H.264/MP4. FPS is a ceiling; static content uses variable frame rate.\nHardware must be verified by default. Ctrl+C stops and finalizes the MP4."
+            "FeatherRec 0.1.0\n\nfeatherrec-cli --diagnose\nfeatherrec-cli --audio-devices\nfeatherrec-cli --record --seconds 10 [--output DIR] [--monitor 1]\n    [--window-title UNIQUE_SUBSTRING]\n    [--preset compact|potato|smooth720|balanced30|balanced|quality]\n    [--resolution 720|1080] [--fps 30|60] [--bitrate 4000000]\n    [--allow-software] [--no-cursor] [--show-border]\n    [--buffers 3..8] [--no-low-latency] [--no-report]\n    [--audio none|system|application] [--output-device ID]\n    [--microphone] [--microphone-device ID] [--mute-microphone]\n\nH.264/MP4 with optional mixed stereo AAC audio. Microphone defaults off.\nApplication audio requires a selected window; no system-audio fallback.\nFPS is a ceiling; static content uses variable frame rate.\nHardware must be verified by default. Ctrl+C stops and finalizes the MP4."
         );
         return Ok(());
     }
@@ -31,6 +31,13 @@ fn run() -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&recording_windows::inspect()?)?
+        );
+        return Ok(());
+    }
+    if args == ["--audio-devices"] {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&recording_windows::enumerate_audio_devices()?)?
         );
         return Ok(());
     }
@@ -53,6 +60,31 @@ fn run() -> Result<()> {
             i += 1;
             continue;
         }
+        if arg == "--no-low-latency" {
+            settings.low_latency = false;
+            i += 1;
+            continue;
+        }
+        if arg == "--no-report" {
+            settings.write_report = false;
+            i += 1;
+            continue;
+        }
+        if arg == "--microphone" {
+            settings.audio.microphone = true;
+            i += 1;
+            continue;
+        }
+        if arg == "--mute-microphone" {
+            settings.audio.microphone_muted = true;
+            i += 1;
+            continue;
+        }
+        if arg == "--show-border" {
+            settings.show_capture_border = true;
+            i += 1;
+            continue;
+        }
         let value = args
             .get(i + 1)
             .with_context(|| format!("Missing value for {arg}"))?;
@@ -61,6 +93,29 @@ fn run() -> Result<()> {
             "--output" => settings.output_dir = value.into(),
             "--monitor" => settings.monitor = value.parse()?,
             "--fps" => settings.fps = value.parse()?,
+            "--buffers" => settings.buffer_frames = value.parse()?,
+            "--audio" => {
+                settings.audio.source = match value.as_str() {
+                    "none" => SystemAudio::Off,
+                    "system" => SystemAudio::System,
+                    "application" => SystemAudio::Application,
+                    _ => bail!("Audio must be none, system, or application"),
+                }
+            }
+            "--microphone-device" => settings.audio.microphone_device = value.clone(),
+            "--output-device" => settings.audio.output_device = value.clone(),
+            "--window-title" => {
+                let matches: Vec<_> = recording_windows::enumerate_windows()?
+                    .into_iter()
+                    .filter(|w| w.title.contains(value))
+                    .collect();
+                ensure!(
+                    matches.len() == 1,
+                    "Window title must identify exactly one window (found {})",
+                    matches.len()
+                );
+                settings.window = matches.into_iter().next();
+            }
             "--bitrate" => settings.bitrate = value.parse()?,
             "--resolution" => match value.as_str() {
                 "720" => (settings.width, settings.height) = (1280, 720),
@@ -69,6 +124,9 @@ fn run() -> Result<()> {
             },
             "--preset" => settings.apply_preset(match value.as_str() {
                 "potato" => Preset::Potato,
+                "compact" => Preset::Compact,
+                "smooth720" => Preset::Smooth720,
+                "balanced30" => Preset::Balanced30,
                 "balanced" => Preset::Balanced,
                 "quality" => Preset::Quality,
                 _ => bail!("Unknown preset: {value}"),

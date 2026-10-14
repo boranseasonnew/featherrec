@@ -8,3 +8,5 @@
 *.recording.json
 *.zip
 *.pdb
+featherrec-settings.json
+featherrec-settings.json.tmp

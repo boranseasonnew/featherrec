@@ -1,11 +1,12 @@
 use crate::{
+    audio::{AudioControls, AudioRecorder},
     encoder::{Device, Encoder, Texture, validate_video},
     inspect::{MediaRuntime, process_resources},
+    mux::mux_audio,
 };
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use recorder_core::{
     FramePacer, Metrics, PressureMonitor, RecordingReport, Settings as RecordingSettings,
-    TEXTURE_LIMIT,
 };
 use std::{
     fs,
@@ -20,7 +21,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows::{
-    Win32::Graphics::{Direct3D11::*, Dxgi::Common::*},
+    Graphics::Capture::GraphicsCaptureItem,
+    Win32::{
+        Foundation::HWND,
+        Graphics::{Direct3D11::*, Dxgi::Common::*},
+        System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop,
+    },
     core::Interface,
 };
 use windows_capture::{
@@ -29,7 +35,22 @@ use windows_capture::{
     graphics_capture_api::InternalCaptureControl,
     monitor::Monitor,
     settings::*,
+    window::Window,
 };
+
+enum Target {
+    Monitor(Monitor),
+    Window(Window),
+}
+impl TryInto<GraphicsCaptureItemType> for Target {
+    type Error = windows::core::Error;
+    fn try_into(self) -> windows::core::Result<GraphicsCaptureItemType> {
+        match self {
+            Self::Monitor(m) => m.try_into(),
+            Self::Window(w) => w.try_into(),
+        }
+    }
+}
 
 pub type SharedMetrics = Arc<Mutex<Metrics>>;
 
@@ -46,6 +67,7 @@ struct Flags {
     clock: Arc<Mutex<Option<Instant>>>,
     in_flight: Arc<AtomicUsize>,
     stop_at: Arc<AtomicI64>,
+    video_base: Arc<AtomicI64>,
 }
 
 struct Handler {
@@ -81,8 +103,9 @@ impl GraphicsCaptureApiHandler for Handler {
             let protection: ID3D11Multithread = ctx.device_context.cast()?;
             let _ = protection.SetMultithreadProtected(true);
         }
-        let (return_texture, available) = mpsc::sync_channel(TEXTURE_LIMIT);
-        for _ in 0..TEXTURE_LIMIT {
+        let pool_size = usize::from(flags.settings.buffer_frames);
+        let (return_texture, available) = mpsc::sync_channel(pool_size);
+        for _ in 0..pool_size {
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: flags.source.0,
                 Height: flags.source.1,
@@ -104,7 +127,7 @@ impl GraphicsCaptureApiHandler for Handler {
             }
             return_texture.send(Texture(texture.context("GPU texture allocation failed")?))?;
         }
-        let (sender, receiver) = mpsc::sync_channel(TEXTURE_LIMIT);
+        let (sender, receiver) = mpsc::sync_channel(pool_size);
         let worker_settings = flags.settings.clone();
         let worker_source = flags.source;
         let worker_path = flags.partial.clone();
@@ -190,15 +213,14 @@ impl GraphicsCaptureApiHandler for Handler {
             "Display size changed. Recording stopped; restart with the new resolution."
         );
         self.flags.metrics.lock().unwrap().captured += 1;
-        let Some(pts) = self
-            .pacer
-            .accept(frame.timestamp()?.Duration, self.flags.settings.fps)
-        else {
+        let capture_time = frame.timestamp()?.Duration;
+        let Some(pts) = self.pacer.accept(capture_time, self.flags.settings.fps) else {
             self.flags.metrics.lock().unwrap().paced_out += 1;
             return Ok(());
         };
         if self.first_frame {
             *self.flags.clock.lock().unwrap() = Some(Instant::now());
+            self.flags.video_base.store(capture_time, Ordering::Relaxed);
             self.first_frame = false;
         }
         let texture = match self.available.try_recv() {
@@ -237,8 +259,8 @@ impl GraphicsCaptureApiHandler for Handler {
     }
 
     fn on_closed(&mut self) -> Result<()> {
-        self.flags.metrics.lock().unwrap().error =
-            Some("Capture source closed or monitor disconnected.".into());
+        self.flags.metrics.lock().unwrap().warning =
+            Some("Capture source closed or monitor disconnected; recording stopped.".into());
         Ok(())
     }
 }
@@ -255,9 +277,19 @@ pub struct Recording {
     last_poll: Instant,
     cpu_ticks: u64,
     pressure: PressureMonitor,
+    audio: Option<AudioRecorder>,
 }
 
 pub fn start(settings: RecordingSettings, metrics: SharedMetrics) -> Result<Recording> {
+    let controls = Arc::new(AudioControls::new(&settings.audio));
+    start_with_audio_controls(settings, metrics, controls)
+}
+
+pub fn start_with_audio_controls(
+    settings: RecordingSettings,
+    metrics: SharedMetrics,
+    controls: Arc<AudioControls>,
+) -> Result<Recording> {
     settings.validate()?;
     fs::create_dir_all(&settings.output_dir).context("Cannot create output folder")?;
     let folder = fs::canonicalize(&settings.output_dir)?;
@@ -270,10 +302,39 @@ pub fn start(settings: RecordingSettings, metrics: SharedMetrics) -> Result<Reco
         .create_new(true)
         .write(true)
         .open(&partial)?;
-    let monitor =
-        Monitor::from_index(settings.monitor).context("Selected monitor is no longer available")?;
-    let source = (monitor.width()?, monitor.height()?);
-    if let Ok(hz) = monitor.refresh_rate()
+    let _runtime = MediaRuntime::new()?;
+    let target = if let Some(selection) = &settings.window {
+        let w = Window::from_raw_hwnd(selection.handle as *mut std::ffi::c_void);
+        ensure!(
+            w.is_valid() && w.process_id()? == selection.process,
+            "Selected window closed or changed. Select the window again."
+        );
+        Target::Window(w)
+    } else {
+        Target::Monitor(
+            Monitor::from_index(settings.monitor)
+                .context("Selected monitor is no longer available")?,
+        )
+    };
+    let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+    let item: GraphicsCaptureItem = unsafe {
+        match &target {
+            Target::Monitor(m) => interop
+                .CreateForMonitor(windows::Win32::Graphics::Gdi::HMONITOR(m.as_raw_hmonitor()))?,
+            Target::Window(w) => interop.CreateForWindow(HWND(w.as_raw_hwnd()))?,
+        }
+    };
+    let size = item.Size()?;
+    ensure!(
+        size.Width > 0 && size.Height > 0,
+        "Selected source has no capturable area"
+    );
+    let source = (size.Width as u32, size.Height as u32);
+    let refresh = match &target {
+        Target::Monitor(m) => m.refresh_rate().ok(),
+        Target::Window(w) => w.monitor().and_then(|m| m.refresh_rate().ok()),
+    };
+    if let Some(hz) = refresh
         && hz > 0
         && settings.fps > hz
     {
@@ -285,6 +346,20 @@ pub fn start(settings: RecordingSettings, metrics: SharedMetrics) -> Result<Reco
     let clock = Arc::new(Mutex::new(None));
     let in_flight = Arc::new(AtomicUsize::new(0));
     let stop_at = Arc::new(AtomicI64::new(0));
+    let video_base = Arc::new(AtomicI64::new(0));
+    let audio = if settings.audio.enabled() {
+        Some(AudioRecorder::start(
+            &settings,
+            folder.join(format!("{stem}.audio.partial.wav")),
+            video_base.clone(),
+            clock.clone(),
+            stop_at.clone(),
+            controls,
+            metrics.clone(),
+        )?)
+    } else {
+        None
+    };
     let flags = Flags {
         settings: settings.clone(),
         source,
@@ -293,15 +368,18 @@ pub fn start(settings: RecordingSettings, metrics: SharedMetrics) -> Result<Reco
         clock: clock.clone(),
         in_flight: in_flight.clone(),
         stop_at: stop_at.clone(),
+        video_base,
     };
     let capture_settings = Settings::new(
-        monitor,
+        target,
         if settings.cursor {
             CursorCaptureSettings::WithCursor
         } else {
             CursorCaptureSettings::WithoutCursor
         },
-        DrawBorderSettings::Default,
+        if settings.show_capture_border { DrawBorderSettings::Default }
+        else if windows_capture::graphics_capture_api::GraphicsCaptureApi::is_border_settings_supported()? { DrawBorderSettings::WithoutBorder }
+        else { metrics.lock().unwrap().warning = Some("This Windows build cannot disable the capture border.".into()); DrawBorderSettings::Default },
         SecondaryWindowSettings::Default,
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
@@ -322,6 +400,7 @@ pub fn start(settings: RecordingSettings, metrics: SharedMetrics) -> Result<Reco
         last_poll: Instant::now(),
         cpu_ticks: process_resources().1,
         pressure: PressureMonitor::default(),
+        audio,
     })
 }
 
@@ -373,6 +452,9 @@ impl Recording {
                 (self.elapsed().as_secs_f64() * 10_000_000.0) as i64,
                 Ordering::Relaxed,
             );
+            if let Some(audio) = &self.audio {
+                audio.request_stop();
+            }
             let callback = control.callback();
             let capture_result = control
                 .stop()
@@ -389,8 +471,10 @@ impl Recording {
             } else {
                 Ok(())
             };
+            let audio_result = self.audio.as_mut().map_or(Ok(()), |a| a.stop());
             capture_result?;
             encode_result?;
+            audio_result?;
         }
         Ok(())
     }
@@ -404,11 +488,29 @@ impl Recording {
         if let Err(error) = self.close_pipeline() {
             self.metrics.lock().unwrap().error = Some(format!("{error:#}"));
         }
+        let _runtime = MediaRuntime::new()?;
+        let mut active_partial = self.partial.clone();
+        let clean_before_mux = self.metrics.lock().unwrap().error.is_none();
+        if clean_before_mux && let Some(audio) = &self.audio {
+            let muxed = self.partial.with_extension("mux.mp4");
+            match mux_audio(
+                &self.partial,
+                &audio.path,
+                &muxed,
+                self.settings.audio.bitrate,
+            ) {
+                Ok(()) => active_partial = muxed,
+                Err(error) => {
+                    self.metrics.lock().unwrap().error =
+                        Some(format!("Audio/video mux failed: {error:#}"))
+                }
+            }
+        }
         let clean = self.metrics.lock().unwrap().error.is_none();
         let validation = if clean {
             (|| {
                 let _runtime = MediaRuntime::new()?;
-                validate_video(&self.partial, self.settings.width, self.settings.height)
+                validate_video(&active_partial, self.settings.width, self.settings.height)
             })()
         } else {
             Err(anyhow!(
@@ -416,12 +518,16 @@ impl Recording {
             ))
         };
         let (file, finalized, validation) = match validation {
-            Ok(()) => match fs::rename(&self.partial, &self.complete) {
+            Ok(()) => match fs::rename(&active_partial, &self.complete) {
                 Ok(()) => (self.complete.clone(), true, "Media Foundation reopened the MP4, verified dimensions and decoded its first frame.".to_string()),
-                Err(error) => (self.partial.clone(), false, format!("MP4 verified, but rename failed: {error}")),
+                Err(error) => (active_partial.clone(), false, format!("MP4 verified, but rename failed: {error}")),
             },
-            Err(error) => (self.partial.clone(), false, format!("{error:#}")),
+            Err(error) => (active_partial, false, format!("{error:#}")),
         };
+        if finalized && let Some(audio) = &self.audio {
+            let _ = fs::remove_file(&audio.path);
+            let _ = fs::remove_file(&self.partial);
+        }
         let mut metrics = self.metrics.lock().unwrap().clone();
         metrics.elapsed_seconds = elapsed;
         metrics.in_flight = 0;
@@ -436,6 +542,9 @@ impl Recording {
             finalized,
             validation,
         };
+        if !self.settings.write_report {
+            return Ok(report);
+        }
         let report_path = self.complete.with_extension("recording.json");
         let mut output = fs::OpenOptions::new()
             .write(true)

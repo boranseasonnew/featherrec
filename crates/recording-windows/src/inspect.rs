@@ -3,7 +3,12 @@ use anyhow::{Context, Result};
 use windows::Win32::{
     Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1},
     Media::MediaFoundation::*,
-    System::{Com::*, ProcessStatus::*, Threading::*},
+    System::{
+        Com::*,
+        ProcessStatus::*,
+        Threading::*,
+        WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+    },
 };
 use windows_capture::monitor::Monitor;
 
@@ -11,9 +16,9 @@ pub(crate) struct MediaRuntime;
 impl MediaRuntime {
     pub fn new() -> Result<Self> {
         unsafe {
-            CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+            RoInitialize(RO_INIT_MULTITHREADED)?;
             if let Err(error) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
-                CoUninitialize();
+                RoUninitialize();
                 return Err(error).context(
                     "Media Foundation unavailable. Install Media Feature Pack on Windows N",
                 );
@@ -26,7 +31,7 @@ impl Drop for MediaRuntime {
     fn drop(&mut self) {
         unsafe {
             let _ = MFShutdown();
-            CoUninitialize();
+            RoUninitialize();
         }
     }
 }
@@ -48,6 +53,26 @@ pub struct HardwareInfo {
     /// Enumeration is not proof that every resolution/FPS combination works.
     pub h264_hardware_encoders: Vec<String>,
     pub logical_processors: usize,
+    pub windows: Vec<recorder_core::WindowSelection>,
+    pub audio_devices: crate::audio::AudioDevices,
+    pub audio_device_error: Option<String>,
+}
+
+pub fn enumerate_windows() -> Result<Vec<recorder_core::WindowSelection>> {
+    let mut windows = Vec::new();
+    for w in windows_capture::window::Window::enumerate()? {
+        let title = w.title().unwrap_or_default();
+        let process = w.process_id().unwrap_or(0);
+        if !title.trim().is_empty() && process != std::process::id() && process > 0 {
+            windows.push(recorder_core::WindowSelection {
+                handle: w.as_raw_hwnd() as u64,
+                process,
+                title,
+            });
+        }
+    }
+    windows.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(windows)
 }
 
 pub fn inspect() -> Result<HardwareInfo> {
@@ -119,10 +144,20 @@ pub fn inspect() -> Result<HardwareInfo> {
     }
     names.sort();
     names.dedup();
+    let (audio_devices, audio_device_error) = match crate::audio::enumerate_audio_devices() {
+        Ok(devices) => (devices, None),
+        Err(error) => (
+            crate::audio::AudioDevices::default(),
+            Some(format!("{error:#}")),
+        ),
+    };
     Ok(HardwareInfo {
         displays,
         gpu_adapters,
         cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "Unknown CPU".into()),
+        windows: enumerate_windows()?,
+        audio_devices,
+        audio_device_error,
         h264_hardware_encoders: names,
         logical_processors: std::thread::available_parallelism().map_or(1, usize::from),
     })

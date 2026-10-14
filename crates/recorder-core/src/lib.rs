@@ -7,7 +7,10 @@ pub const TEXTURE_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Preset {
+    Compact,
     Potato,
+    Smooth720,
+    Balanced30,
     Balanced,
     Quality,
 }
@@ -20,7 +23,57 @@ pub enum EncoderPolicy {
     AllowSoftware,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WindowSelection {
+    pub handle: u64,
+    pub process: u32,
+    pub title: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SystemAudio {
+    #[default]
+    Off,
+    System,
+    Application,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    pub source: SystemAudio,
+    pub output_device: String,
+    pub microphone: bool,
+    pub microphone_device: String,
+    pub microphone_muted: bool,
+    pub system_gain: f32,
+    pub microphone_gain: f32,
+    pub bitrate: u32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            source: SystemAudio::Off,
+            output_device: String::new(),
+            microphone: false,
+            microphone_device: String::new(),
+            microphone_muted: false,
+            system_gain: 1.0,
+            microphone_gain: 1.0,
+            bitrate: 192_000,
+        }
+    }
+}
+
+impl AudioSettings {
+    pub fn enabled(&self) -> bool {
+        self.source != SystemAudio::Off || self.microphone
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub monitor: usize,
     pub width: u32,
@@ -31,6 +84,14 @@ pub struct Settings {
     pub output_dir: PathBuf,
     pub preset: Preset,
     pub cursor: bool,
+    pub buffer_frames: u8,
+    pub low_latency: bool,
+    pub write_report: bool,
+    pub show_capture_border: bool,
+    /// Window handles are transient and must never be silently reused after restart.
+    #[serde(skip)]
+    pub window: Option<WindowSelection>,
+    pub audio: AudioSettings,
 }
 
 impl Default for Settings {
@@ -45,6 +106,12 @@ impl Default for Settings {
             output_dir: PathBuf::from("recordings"),
             preset: Preset::Potato,
             cursor: true,
+            buffer_frames: TEXTURE_LIMIT as u8,
+            low_latency: true,
+            write_report: true,
+            show_capture_border: false,
+            window: None,
+            audio: AudioSettings::default(),
         }
     }
 }
@@ -53,7 +120,10 @@ impl Settings {
     pub fn apply_preset(&mut self, preset: Preset) {
         self.preset = preset;
         let (w, h, fps, bitrate) = match preset {
+            Preset::Compact => (1280, 720, 30, 2_500_000),
             Preset::Potato => (1280, 720, 30, 4_000_000),
+            Preset::Smooth720 => (1280, 720, 60, 6_000_000),
+            Preset::Balanced30 => (1920, 1080, 30, 6_000_000),
             Preset::Balanced => (1920, 1080, 60, 8_000_000),
             Preset::Quality => (1920, 1080, 60, 16_000_000),
         };
@@ -67,6 +137,23 @@ impl Settings {
             "Choose 720p or 1080p"
         );
         ensure!(matches!(self.fps, 30 | 60), "Choose 30 or 60 FPS");
+        ensure!(
+            self.audio.source != SystemAudio::Application || self.window.is_some(),
+            "Select a window before using application-only audio"
+        );
+        ensure!(
+            [96_000, 128_000, 192_000, 256_000].contains(&self.audio.bitrate),
+            "Choose a supported AAC bitrate"
+        );
+        ensure!(
+            (0.0..=2.0).contains(&self.audio.system_gain)
+                && (0.0..=2.0).contains(&self.audio.microphone_gain),
+            "Audio gain must be finite and between 0 and 200%"
+        );
+        ensure!(
+            (3..=8).contains(&self.buffer_frames),
+            "GPU frame pool must contain 3 to 8 textures"
+        );
         ensure!(
             (1_000_000..=50_000_000).contains(&self.bitrate),
             "Bitrate must be between 1 and 50 Mbps"
@@ -123,6 +210,10 @@ pub struct Metrics {
     pub hardware_verified: bool,
     pub warning: Option<String>,
     pub error: Option<String>,
+    pub audio_frames: u64,
+    pub audio_discontinuities: u64,
+    pub system_peak: f32,
+    pub microphone_peak: f32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -169,7 +260,14 @@ mod tests {
             output_dir: PathBuf::from("custom"),
             ..Settings::default()
         };
-        for p in [Preset::Potato, Preset::Balanced, Preset::Quality] {
+        for p in [
+            Preset::Compact,
+            Preset::Potato,
+            Preset::Smooth720,
+            Preset::Balanced30,
+            Preset::Balanced,
+            Preset::Quality,
+        ] {
             s.apply_preset(p);
             s.validate().unwrap();
             assert_eq!(s.output_dir, PathBuf::from("custom"));
@@ -207,5 +305,21 @@ mod tests {
         assert!(!p.observe(3, 0.0, 60));
         assert!(p.observe(4, 0.0, 60));
         assert!(!p.observe(5, 100.0, 60));
+    }
+
+    #[test]
+    fn old_preferences_receive_safe_advanced_defaults() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        for field in ["buffer_frames", "low_latency", "write_report"] {
+            old.as_object_mut().unwrap().remove(field);
+        }
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.buffer_frames, 4);
+        assert!(restored.low_latency && restored.write_report);
+        let invalid = Settings {
+            buffer_frames: 255,
+            ..restored
+        };
+        assert!(invalid.validate().is_err());
     }
 }

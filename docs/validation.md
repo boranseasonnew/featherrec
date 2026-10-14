@@ -28,8 +28,9 @@ cargo test --workspace --locked
 cargo build --workspace --release --locked
 ```
 
-Five unit tests passed (settings, presets, monotonic pacing, pressure hysteresis,
-and Unicode/extended path normalization). The desktop integration test is ignored
+Nine unit tests passed (settings, presets, monotonic pacing, pressure hysteresis,
+Unicode/extended path normalization, legacy preferences, hotkey validation and
+Windows hotkey-thread dispatch/shutdown). The desktop integration test is ignored
 by default because hosted CI does not prove physical capture. It was also invoked
 explicitly on this machine and passed: **two recordings in one process**, each
 successfully finalized, reopened, dimension-checked and first-frame-decoded.
@@ -113,10 +114,45 @@ The initial CSV used the host's Turkish decimal formatting. Its values were pars
 with that explicit locale for analysis; the sampling script now exports invariant
 decimal points for reproducible downstream numeric parsing.
 
+## Settings, window capture and audio update
+
+- Release GUI launch and screenshots passed for the redesigned dashboard, Audio
+  settings and locked Advanced settings. Advanced controls are disabled until the
+  explicit unlock; no placeholder audio controls remain.
+- Real global Ctrl+Shift+F9/F10 input started/stopped the GUI recorder while in the
+  background, with minimize-on-start enabled. The application closed normally, and
+  the resulting 2.21-second, 66-frame MP4 passed full decoding with zero pool drops.
+- Windows enumerated actual render and microphone endpoint IDs/names. Both device
+  selectors support the Windows default and specific endpoint IDs.
+- System loopback and process-tree loopback recorded simultaneous reference sources
+  at 440 and 880 Hz. Each complete H.264/AAC MP4 decoded successfully: 149 frames
+  over 5.01 seconds for system capture; 151 frames over 5.03 seconds for the selected
+  window/process. Audio used 48 kHz stereo AAC. No drops or audio discontinuities
+  were reported in these short runs.
+- Offline analysis of the middle two seconds found both frequencies in system audio
+  at comparable levels. In process-only audio, the other process's 880 Hz component
+  was approximately 115 dB below the selected 440 Hz component. This validates process
+  isolation for this controlled source, rather than all games or audio middleware.
+- Microphone-only capture with mute enabled produced a valid 3.09-second MP4. Full
+  decode and audio statistics confirmed every decoded audio sample was zero. This
+  verifies mute, not microphone speech quality.
+- A subsequent 60.044-second system-audio plus muted-microphone run finalized with
+  1,573 video samples, zero pool drops, texture high-water 4, and 2,882,125 PCM audio
+  frames (60.0443 seconds). Both streams passed complete decoding. Eleven device
+  discontinuity flags were reported; no late-packet warning or timing-buffer overflow
+  occurred. This is a bounded short-session check, not proof of uninterrupted audio
+  or long-session perceptual A/V synchronization.
+- All new recordings used capture-border suppression through Windows' supported API
+  without initialization failure. No claim is made about unsupported older builds.
+
+Audio tests are local and excluded from Git. Test playback was stopped when requested;
+subsequent checks did not play audio. Reference recordings are never release assets.
+
 ## Not yet validated
 
-Audio is not implemented or enabled. No A/V sync, audio-device disconnect, or long
-audio drift results are claimed. Software-only fallback, NVIDIA/Intel hardware,
+Long-session perceptual A/V sync, audio-device disconnect and drift across different
+drivers remain unverified. Audio is one mixed stereo track, not separate OBS-style
+tracks. Software-only fallback, NVIDIA/Intel hardware,
 Windows 10, other GPU drivers, multi-monitor/cross-adapter capture, HDR, RDP, screen
 lock, physical disconnects, display-mode changes, full disks, forced termination,
 and power loss remain outside the completed test matrix.

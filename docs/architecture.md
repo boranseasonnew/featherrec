@@ -2,18 +2,18 @@
 
 The workspace separates platform-neutral settings and timing (`recorder-core`),
 Windows capture/encoding/inspection (`recording-windows`), and UI/CLI (`featherrec`).
-Audio will be a separate module once its timing and device lifecycle are validated.
+Audio capture/mixing and MP4 muxing are separate Windows modules.
 
 ## Capture and frame ownership
 
 `windows-capture` 2.0.1 (MIT) wraps Windows Graphics Capture and D3D11. Its current
 source and maintenance activity were inspected before selection. Full-monitor WGC
-provides event-driven capture with system-relative timestamps and source closure
+provides monitor/window capture with system-relative timestamps and source closure
 notifications. Desktop Duplication is a possible fallback, not a second untested
 backend included just for the checklist.
 
 The upstream crate's convenience `VideoEncoder` uses an unbounded channel, so this
-application does not use it. FeatherRec owns exactly four source-sized BGRA GPU
+application does not use it. FeatherRec owns four source-sized BGRA GPU
 textures. A callback tries to acquire one, performs a GPU copy, and tries to enqueue
 it. If none are free, it counts a dropped frame. It never waits for encoding or disk.
 Oversupply skipped by the FPS pacer is counted separately from backpressure drops.
@@ -26,7 +26,7 @@ Media Foundation releases it. GPU copies avoid application CPU pixel readbacks.
 There is no claim that drivers or transforms implement an entirely zero-copy path.
 
 Application-owned source texture storage is `4 × width × height × 4` bytes (about
-31.6 MiB at 1080p), plus the OS capture pool, encoder buffers, UI, and driver memory.
+31.6 MiB at 1080p by default; advanced settings allow 3–8 textures), plus the OS capture pool, encoder buffers, UI, and driver memory.
 The pool limits application frame ownership, not all driver or OS allocations.
 The high-water in-flight count is reported so validation can check the invariant.
 
@@ -54,8 +54,9 @@ to stop time. Frame ordering is preserved and repeated/backward timestamps rejec
 ## Stop and failure handling
 
 Normal stop first joins capture, closes the bounded packet sender, drains encoding,
-and calls `Finalize`. A source-size change or source closure stops the recording
-with an error. Encoder/disk failures are surfaced and partial files retained.
+and calls `Finalize`. A source-size change stops recording with an error. A source
+closure stops capture and attempts clean finalization. Encoder/disk failures are
+surfaced and partial files retained.
 Output names contain a nanosecond timestamp and process ID, with exclusive creation.
 
 On a clean stop, SourceReader reopens the container, verifies dimensions, and decodes
@@ -66,6 +67,28 @@ No output is called successful solely because the encoder returned without panic
 Closing the UI requests stop and waits asynchronously for finalization. A destructor
 also stops/joins for normal unwinding. Process termination or a hung GPU driver
 cannot be made safe by a destructor; MP4 recovery is not guaranteed in those cases.
+
+## Audio
+
+`wasapi` 0.26.0 (MIT) provides event-driven shared-mode capture at 48 kHz float stereo,
+with Windows automatic format conversion. System loopback uses a render endpoint;
+process loopback includes the selected window's process tree (build 20348+). There is
+no fallback from process audio to system audio. The microphone is independently selected.
+
+WASAPI packet QPC timestamps are rebased against the first WGC system-relative timestamp.
+Each source has a fixed one-second tagged sample ring; a 100 ms jitter window permits
+packet arrival before clocked mixing. Late packets/discontinuities are counted, timing
+overflow fails explicitly, and missing samples become silence. Live gains and mic mute
+use atomics. Mixing clips to PCM16 and writes bounded chunks to a local WAV. Memory does
+not grow with recording duration. WAV storage is about 11.5 MB/minute, with a 4 GiB limit.
+
+On stop, capture time is frozen for video and audio. After workers drain, a separate
+Media Foundation pass copies compressed H.264 samples and encodes mixed PCM as stereo AAC.
+This avoids a second video encode but adds temporary storage and finalization time.
+The MP4 contains one mixed audio track. Audio is decoded once and video dimensions/first
+frame are checked before promoting the output; full-file decoding remains external QA.
+Temporary video/WAV files are removed only after validated promotion. Audio-device
+failure is explicit and stops recording. Long-session drift and hot-unplug need more tests.
 
 ## Diagnostics and UI
 
@@ -86,6 +109,15 @@ never silently changes recording quality.
 Reports and optional portable preferences are local JSON files. Runtime code has
 no network communication. Dependency downloads and GitHub CI are build-time concerns.
 
+The Turkish UI has a recorder dashboard and five settings pages. Engine/source controls
+are locked during capture; microphone mute and source gains stay live. A dedicated
+blocking Windows message thread uses RegisterHotKey and MOD_NOREPEAT, wakes the GUI even
+when minimized, and rolls back registrations on a conflict. Assignment temporarily
+suspends active shortcuts; only explicit foreground key assignment reads key events.
+There is no global keyboard hook. Window handles are never persisted across restarts.
+Advanced controls expose bitrate, encoder fallback, frame-pool size, low latency and
+report writing behind an explicit unlock. Output verification cannot be disabled.
+
 ## References
 
 - [windows-capture source and MIT license](https://github.com/NiiightmareXD/windows-capture)
@@ -94,3 +126,7 @@ no network communication. Dependency downloads and GitHub CI are build-time conc
 - [SinkWriter transform inspection](https://learn.microsoft.com/en-us/windows/win32/api/mfreadwrite/nf-mfreadwrite-imfsinkwriterex-gettransformforstream)
 - [Hardware transform enumeration](https://learn.microsoft.com/en-us/windows/win32/api/mfapi/nf-mfapi-mftenumex)
 - [egui/eframe](https://github.com/emilk/egui)
+- [wasapi-rs](https://github.com/HEnquist/wasapi-rs)
+- [Process loopback sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)
+- [Capture indicator API](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.graphicscapturesession.isborderrequired)
+- [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)
