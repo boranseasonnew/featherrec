@@ -1,0 +1,20 @@
+[package]
+name = "featherrec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+recorder-core = { path = "../recorder-core" }
+recording-windows = { path = "../recording-windows" }
+anyhow.workspace = true
+serde_json.workspace = true
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow"] }
+rfd = { version = "0.17", default-features = false }
+windows = { workspace = true, features = ["Win32_System_Console"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[bin]]
+name = "featherrec-cli"
+path = "src/cli.rs"

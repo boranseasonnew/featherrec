@@ -1,0 +1,10 @@
+/target/
+/.tools/
+/research/
+/recordings/
+/validation/
+*.mp4
+*.partial.mp4
+*.recording.json
+*.zip
+*.pdb

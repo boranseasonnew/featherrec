@@ -1,0 +1,22 @@
+[workspace]
+members = ["crates/recorder-core", "crates/recording-windows", "crates/featherrec"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.99"
+repository = "https://github.com/boranseasonnew/featherrec"
+
+[workspace.dependencies]
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

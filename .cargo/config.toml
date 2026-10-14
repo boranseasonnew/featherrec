@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-msvc]
+# Portable binaries do not require a separate Visual C++ runtime installation.
+rustflags = ["-C", "target-feature=+crt-static"]

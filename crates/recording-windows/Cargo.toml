@@ -1,0 +1,15 @@
+[package]
+name = "recording-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+recorder-core = { path = "../recorder-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+windows.workspace = true
+windows-core = "=0.62.2"
+windows-capture = "=2.0.1"
