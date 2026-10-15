@@ -151,7 +151,7 @@ impl FeatherRec {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    caption(ui, "0.1.0 · Windows");
+                    caption(ui, concat!(env!("CARGO_PKG_VERSION"), " · Windows"));
                     ui.label(
                         RichText::new("Yalnızca bu bilgisayarda")
                             .color(GREEN)

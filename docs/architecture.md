@@ -30,6 +30,15 @@ Application-owned source texture storage is `4 × width × height × 4` bytes (a
 The pool limits application frame ownership, not all driver or OS allocations.
 The high-water in-flight count is reported so validation can check the invariant.
 
+Source-size changes no longer invalidate the encoder. WGC recreates its capture
+pool; FeatherRec fits subsequent textures into the original encoder canvas using
+the D3D11 video processor. The resize path holds one additional source-sized scratch
+texture, recreated only when the source size changes. Normal matching frames use
+the original GPU copy path. Input/output views and COM references are released each
+frame; Media Foundation retains its bounded output textures until tracked release.
+Aspect-ratio changes use a black background. Video timestamps and audio's origin
+are preserved across changes, with a source-size-change counter in diagnostics.
+
 ## Media pipeline
 
 The sink writer receives BGRA D3D textures with the actual monitor dimensions and
@@ -54,8 +63,7 @@ to stop time. Frame ordering is preserved and repeated/backward timestamps rejec
 ## Stop and failure handling
 
 Normal stop first joins capture, closes the bounded packet sender, drains encoding,
-and calls `Finalize`. A source-size change stops recording with an error. A source
-closure stops capture and attempts clean finalization. Encoder/disk failures are
+and calls `Finalize`. A source closure stops capture and attempts clean finalization. Encoder/disk failures are
 surfaced and partial files retained.
 Output names contain a nanosecond timestamp and process ID, with exclusive creation.
 
@@ -106,7 +114,11 @@ from counts and elapsed capture time; submitted samples are not a hardware compl
 counter. A pressure monitor recommends safer settings after sustained pressure and
 never silently changes recording quality.
 
-Reports and optional portable preferences are local JSON files. Runtime code has
+Reports and per-user preferences are local JSON files. Preferences are written and
+flushed to a unique temporary file, then atomically replaced in Local AppData before
+Save returns. Global-hotkey registration is independent; a collision preserves other
+settings and rolls the shortcut selection back. Legacy portable preferences migrate
+only when the per-user file is absent. Runtime code has
 no network communication. Dependency downloads and GitHub CI are build-time concerns.
 
 The Turkish UI has a recorder dashboard and five settings pages. Engine/source controls
@@ -130,3 +142,4 @@ report writing behind an explicit unlock. Output verification cannot be disabled
 - [Process loopback sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)
 - [Capture indicator API](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.graphicscapturesession.isborderrequired)
 - [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)
+- [D3D11 video processing](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11videocontext-videoprocessorblt)

@@ -214,6 +214,8 @@ pub struct Metrics {
     pub audio_discontinuities: u64,
     pub system_peak: f32,
     pub microphone_peak: f32,
+    #[serde(default)]
+    pub source_size_changes: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

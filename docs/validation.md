@@ -1,5 +1,10 @@
 # Validation record
 
+The historical measurements below concern v0.1.0. The v0.1.1 release notes record
+its resize, persistent-settings, icon and installer regression checks. The reported
+Minecraft fullscreen failure in v0.1.0 was traced to its explicit source-size-change
+abort; this condition is replaced by fixed-canvas GPU scaling in v0.1.1.
+
 Validation date: 15 October 2026 (Europe/Istanbul). These are local functional
 checks of the initial implementation, not a cross-hardware certification or an OBS
 benchmark. Desktop recordings and reports are excluded from the public repository.

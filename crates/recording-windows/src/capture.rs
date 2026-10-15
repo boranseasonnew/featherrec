@@ -3,6 +3,7 @@ use crate::{
     encoder::{Device, Encoder, Texture, validate_video},
     inspect::{MediaRuntime, process_resources},
     mux::mux_audio,
+    scaler::Scaler,
 };
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use recorder_core::{
@@ -78,6 +79,8 @@ struct Handler {
     worker: Option<JoinHandle<Result<()>>>,
     pacer: FramePacer,
     first_frame: bool,
+    scaler: Option<Scaler>,
+    last_source: (u32, u32),
 }
 
 // The capture library serializes callbacks with its mutex. D3D11's immediate
@@ -188,6 +191,7 @@ impl GraphicsCaptureApiHandler for Handler {
             .recv_timeout(Duration::from_secs(30))
             .context("Encoder initialization did not complete")?
             .map_err(anyhow::Error::msg)?;
+        let last_source = flags.source;
         Ok(Self {
             flags,
             available,
@@ -196,6 +200,8 @@ impl GraphicsCaptureApiHandler for Handler {
             worker: Some(worker),
             pacer: FramePacer::default(),
             first_frame: true,
+            scaler: None,
+            last_source,
         })
     }
 
@@ -208,10 +214,19 @@ impl GraphicsCaptureApiHandler for Handler {
             control.stop();
             return Ok(());
         }
-        ensure!(
-            (frame.width(), frame.height()) == self.flags.source,
-            "Display size changed. Recording stopped; restart with the new resolution."
-        );
+        let size = (frame.width(), frame.height());
+        if size.0 == 0 || size.1 == 0 {
+            return Ok(());
+        }
+        if size != self.last_source {
+            self.last_source = size;
+            let mut metrics = self.flags.metrics.lock().unwrap();
+            metrics.source_size_changes += 1;
+            metrics.warning = Some(format!(
+                "Kaynak boyutu {} × {} oldu; kayıt aynı dosyada devam ediyor.",
+                size.0, size.1
+            ));
+        }
         self.flags.metrics.lock().unwrap().captured += 1;
         let capture_time = frame.timestamp()?.Duration;
         let Some(pts) = self.pacer.accept(capture_time, self.flags.settings.fps) else {
@@ -231,17 +246,46 @@ impl GraphicsCaptureApiHandler for Handler {
             }
             Err(TryRecvError::Disconnected) => bail!("Encoder texture pool disconnected"),
         };
+        let copy = (|| -> Result<()> {
+            if size == self.flags.source {
+                self.scaler = None;
+                unsafe {
+                    frame
+                        .device_context()
+                        .CopyResource(&texture.0, frame.as_raw_texture());
+                }
+            } else {
+                if self.scaler.as_ref().is_none_or(|s| s.source != size) {
+                    self.scaler = Some(Scaler::new(
+                        frame.device(),
+                        frame.device_context(),
+                        size,
+                        self.flags.source,
+                        self.flags.settings.fps,
+                    )?);
+                }
+                self.scaler.as_ref().unwrap().copy(
+                    frame.device_context(),
+                    frame.as_raw_texture(),
+                    &texture.0,
+                )?;
+            }
+            unsafe {
+                frame.device_context().Flush();
+            }
+            Ok(())
+        })();
+        if let Err(error) = copy {
+            let _ = self.return_texture.try_send(texture);
+            return Err(error.context(format!(
+                "Ekran boyutu {} × {} olarak değiştiğinde görüntü uyarlanamadı",
+                size.0, size.1
+            )));
+        }
         let count = self.flags.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut m = self.flags.metrics.lock().unwrap();
             m.max_in_flight = m.max_in_flight.max(count);
-        }
-        unsafe {
-            frame
-                .device_context()
-                .CopyResource(&texture.0, frame.as_raw_texture());
-            // Publish the GPU commands before the MF worker consumes the resource.
-            frame.device_context().Flush();
         }
         if let Some(sender) = &self.sender
             && let Err(error) = sender.try_send(Packet { texture, pts })
@@ -514,7 +558,13 @@ impl Recording {
             })()
         } else {
             Err(anyhow!(
-                "Capture or encoder failed; inspect the retained partial file"
+                "{}",
+                self.metrics
+                    .lock()
+                    .unwrap()
+                    .error
+                    .as_deref()
+                    .unwrap_or("Kayıt tamamlanamadı; geçici dosya korundu")
             ))
         };
         let (file, finalized, validation) = match validation {

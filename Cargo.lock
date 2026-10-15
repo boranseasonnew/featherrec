@@ -604,7 +604,7 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 
 [[package]]
 name = "featherrec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "recorder-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "recording-windows"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "recorder-core",

@@ -15,7 +15,11 @@ is not planning further updates. No maintainer response, fixes, security patches
 future releases are guaranteed. The source, build instructions and tests remain
 available for anyone who wants to continue development under the MIT license.
 
-[Download the latest published Windows build](https://github.com/boranseasonnew/featherrec/releases/tag/v0.1.0).
+[Download published Windows builds](https://github.com/boranseasonnew/featherrec/releases).
+
+The setup EXE installs FeatherRec for the current Windows user, adds a Start menu
+entry and supports normal Windows uninstallation. A desktop shortcut is optional;
+administrator access is not required. The portable EXE remains available.
 
 ![FeatherRec desktop interface](assets/screenshot.png)
 
@@ -83,6 +87,11 @@ need FFmpeg at runtime. `scripts/package.ps1` copies the binaries, documentation
 license and SHA-256 checksums into `target/portable`; it does not publish a release.
 Unverified official binary releases are not published automatically.
 
+The Windows SDK resource compiler embeds the app icon and version metadata.
+To build the setup executable, install Inno Setup 6 and run `./scripts/installer.ps1`
+after the release build. CI also verifies installation, the EXE icon, Start menu
+shortcut and uninstallation on a disposable runner.
+
 On a machine with installed MSVC/SDK libraries but incomplete Visual Studio
 registration, `scripts/dev.ps1` can use Rust's bundled linker:
 
@@ -98,8 +107,12 @@ The tools and downloaded dependencies are excluded from Git.
 Choose a display or window and preset, adjust the settings, then select **Kaydı başlat**.
 Select **Kaydı durdur** and wait for MP4 verification before moving the file.
 Closing the window while recording requests stop and waits for finalization.
-Portable preferences are saved beside the executable only when **Ayarları kaydet**
-is selected. An unwritable folder produces an error.
+Preferences are saved in `%LOCALAPPDATA%\FeatherRec\settings.json` when **Ayarları
+kaydet** is selected. Saving finishes before the success message, independently of
+global-hotkey registration. Settings survive restarts, installation and moving the
+EXE. A valid legacy `featherrec-settings.json` beside the EXE is imported once when
+the user profile has no settings yet. Default recordings go to `Videos\FeatherRec`;
+an existing saved output folder is preserved. Failed writes produce a visible error.
 
 In **Ayarlar → Ses**, choose system sound or only the selected application's sound.
 Select a window first for application-only audio. It includes the application's child
@@ -133,8 +146,11 @@ forced process termination may leave an incomplete MP4.
 - 30/60 FPS are capture ceilings, not performance guarantees. Static content may
   produce fewer callbacks. Reports distinguish input submissions from encoded output;
   verify actual output frame rate with the full-file test procedure.
-- Changing source dimensions ends recording with an error. Closing a selected window
-  ends capture and attempts normal finalization. Reselect before a new recording.
+- Source-size changes, including a game's fullscreen resolution switch, are resized
+  on the GPU into a fixed encoder canvas. Recording and its audio clock continue in
+  the same MP4. A changed aspect ratio is fitted with black bars rather than cropped.
+  Closing a selected window ends capture and attempts normal finalization. Reselect
+  before a new recording. Actual device removal or driver failure can still stop it.
 - WGC uses the default D3D adapter. Cross-adapter monitors, RDP sessions, screen lock,
   HDR, protected content and driver resets are not fully validated. Protected content
   can appear black. There is no HDR color-management implementation.

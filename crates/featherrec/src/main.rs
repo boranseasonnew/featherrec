@@ -2,6 +2,7 @@
 
 mod hotkeys;
 mod preferences;
+mod storage;
 mod ui;
 
 use eframe::egui;
@@ -65,6 +66,7 @@ struct PendingBindings {
 struct FeatherRec {
     prefs: Preferences,
     saved: Preferences,
+    settings_file: PathBuf,
     hardware: Option<HardwareInfo>,
     inspection: Receiver<Result<HardwareInfo, String>>,
     metrics: SharedMetrics,
@@ -92,25 +94,40 @@ struct FeatherRec {
 impl FeatherRec {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui::install_theme(&cc.egui_ctx);
+        let args: Vec<String> = std::env::args().collect();
         let mut notice = None;
+        let settings_file = args
+            .windows(2)
+            .find(|p| p[0] == "--settings-file")
+            .map(|p| PathBuf::from(&p[1]))
+            .unwrap_or_else(|| {
+                storage::settings_path()
+                    .unwrap_or_else(|_| portable_root().join("featherrec-settings.json"))
+            });
         let default = || {
             Preferences::new(Settings {
-                output_dir: portable_root().join("recordings"),
+                output_dir: std::env::var_os("USERPROFILE")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(portable_root)
+                    .join("Videos/FeatherRec"),
                 ..Settings::default()
             })
         };
-        let prefs = match std::fs::read(portable_root().join("featherrec-settings.json")) {
-            Ok(bytes) => match serde_json::from_slice::<Preferences>(&bytes) {
-                Ok(prefs) if prefs.validate().is_ok() => prefs,
-                _ => {
-                    notice = Some((
-                        "Kaydedilmiş ayarlar okunamadı. Güvenli varsayılanlar yüklendi.".into(),
-                        true,
-                    ));
-                    default()
-                }
-            },
-            Err(_) => default(),
+        let prefs = match storage::load(
+            &settings_file,
+            &portable_root().join("featherrec-settings.json"),
+        ) {
+            Ok(Some(prefs)) => prefs,
+            Ok(None) => default(),
+            Err(error) => {
+                notice = Some((
+                    format!(
+                        "Ayarlar okunamadı: {error:#}. Güvenli varsayılanlar yüklendi; eski dosya korundu."
+                    ),
+                    true,
+                ));
+                default()
+            }
         };
         let (tx, inspection) = mpsc::sync_channel(1);
         let ctx = cc.egui_ctx.clone();
@@ -125,7 +142,6 @@ impl FeatherRec {
                 None
             }
         };
-        let args: Vec<String> = std::env::args().collect();
         let screenshot = args
             .windows(2)
             .find(|p| p[0] == "--screenshot")
@@ -148,6 +164,7 @@ impl FeatherRec {
         let settings_page = args.iter().any(|p| p == "--settings-tab");
         let mut app = Self {
             saved: prefs.clone(),
+            settings_file,
             prefs,
             hardware: None,
             inspection,
@@ -195,19 +212,15 @@ impl FeatherRec {
                 }
                 Err(error) => self.notice = Some((error.to_string(), true)),
             }
-        } else if let Some(prefs) = save {
-            self.persist(prefs);
+        } else if save.is_some() {
+            self.notice = Some((
+                "Ayarlar kaydedildi; genel kısayol hizmeti bu oturumda kullanılamıyor.".into(),
+                true,
+            ));
         }
     }
-    fn persist(&mut self, prefs: Preferences) {
-        let path = portable_root().join("featherrec-settings.json");
-        let result = (|| -> anyhow::Result<()> {
-            prefs.validate()?;
-            let temporary = path.with_extension("json.tmp");
-            std::fs::write(&temporary, serde_json::to_vec_pretty(&prefs)?)?;
-            std::fs::rename(temporary, path)?;
-            Ok(())
-        })();
+    fn persist(&mut self, prefs: Preferences) -> bool {
+        let result = storage::save(&self.settings_file, &prefs);
         match result {
             Ok(()) => {
                 self.saved = prefs;
@@ -215,9 +228,11 @@ impl FeatherRec {
                     "Ayarlar kaydedildi. Kayıt ve kısayol seçimlerin bu bilgisayarda kalır.".into(),
                     false,
                 ));
+                true
             }
             Err(error) => {
-                self.notice = Some((format!("Ayar dosyası kaydedilemedi: {error:#}"), true))
+                self.notice = Some((format!("Ayar dosyası kaydedilemedi: {error:#}"), true));
+                false
             }
         }
     }
@@ -226,7 +241,9 @@ impl FeatherRec {
             self.notice = Some((error.to_string(), true));
             return;
         }
-        self.configure_bindings(self.prefs.hotkeys.clone(), Some(self.prefs.clone()));
+        if self.persist(self.prefs.clone()) {
+            self.configure_bindings(self.prefs.hotkeys.clone(), Some(self.prefs.clone()));
+        }
     }
     fn refresh_sources(&mut self, ctx: &egui::Context) {
         let (tx, rx) = mpsc::sync_channel(1);
@@ -347,13 +364,24 @@ impl FeatherRec {
                         "Genel kısayollar kapalı".into()
                     };
                     self.active_bindings = pending.bindings;
-                    if let Some(prefs) = pending.save {
-                        self.persist(prefs);
-                    }
                 }
                 Err(error) => {
+                    let saved_other_settings = pending.save.is_some();
+                    if let Some(mut prefs) = pending.save {
+                        prefs.hotkeys = self.active_bindings.clone();
+                        if !self.persist(prefs) {
+                            return;
+                        }
+                    }
                     self.shortcut_status = "Kısayol çakışması — önceki seçim korunuyor".into();
-                    self.notice = Some((error, true));
+                    self.notice = Some((
+                        if saved_other_settings {
+                            format!("Diğer ayarlar kaydedildi. Kısayol uygulanamadı: {error}")
+                        } else {
+                            error
+                        },
+                        true,
+                    ));
                 }
             }
         }
@@ -603,11 +631,20 @@ impl eframe::App for FeatherRec {
 }
 
 fn main() {
+    let icon = image::load_from_memory(include_bytes!("../../../assets/featherrec.png"))
+        .expect("Embedded application icon is invalid")
+        .into_rgba8();
+    let icon = egui::IconData {
+        width: icon.width(),
+        height: icon.height(),
+        rgba: icon.into_raw(),
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 800.0])
             .with_min_inner_size([900.0, 680.0])
-            .with_title("FeatherRec"),
+            .with_title("FeatherRec")
+            .with_icon(icon),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
