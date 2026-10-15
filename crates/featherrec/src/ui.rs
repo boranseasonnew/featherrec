@@ -955,9 +955,11 @@ impl FeatherRec {
             self.page = Page::Settings;
             self.settings_tab = SettingsTab::Audio;
         }
-        if self.job.is_some() || self.audio_preview.is_some() {
+        if self.audio_preview.is_some()
+            || (self.job.is_some() && self.prefs.recording.audio.enabled())
+        {
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(50));
+                .request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 

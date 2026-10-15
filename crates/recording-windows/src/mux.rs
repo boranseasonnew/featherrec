@@ -105,15 +105,17 @@ pub(crate) fn mux_audio(
             if media_type.GetGUID(&MF_MT_MAJOR_TYPE)? != MFMediaType_Audio {
                 continue;
             }
+            // Give every track its own demux position, including short recordings.
+            let decoded_reader = MFCreateSourceReaderFromURL(PCWSTR(output_path.as_ptr()), None)?;
             let pcm = MFCreateMediaType()?;
             pcm.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
             pcm.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)?;
-            output_reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
-            output_reader.SetStreamSelection(index, true)?;
-            output_reader.SetCurrentMediaType(index, None, &pcm)?;
+            decoded_reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
+            decoded_reader.SetStreamSelection(index, true)?;
+            decoded_reader.SetCurrentMediaType(index, None, &pcm)?;
             ensure!(
-                next(&output_reader, index)?.is_some(),
-                "Muxed MP4 has no decodable audio sample"
+                next(&decoded_reader, index)?.is_some(),
+                "Muxed MP4 audio stream {index} has no decodable sample"
             );
             count += 1;
         }
@@ -175,8 +177,10 @@ mod tests {
             waves.push(path);
         }
         // Pure file processing: never opens an audio render device or plays a tone.
-        mux_audio(&video, &waves[..1], &folder.0.join("one.mp4"), 128_000)?;
-        mux_audio(&video, &waves, &folder.0.join("five.mp4"), 128_000)?;
+        mux_audio(&video, &waves[..1], &folder.0.join("one.mp4"), 128_000)
+            .context("One-track mux test")?;
+        mux_audio(&video, &waves, &folder.0.join("five.mp4"), 128_000)
+            .context("Five-track mux test")?;
         Ok(())
     }
 }
