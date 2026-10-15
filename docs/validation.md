@@ -150,13 +150,16 @@ decimal points for reproducible downstream numeric parsing.
 - All new recordings used capture-border suppression through Windows' supported API
   without initialization failure. No claim is made about unsupported older builds.
 
-Audio tests are local and excluded from Git. Reference recordings are never release assets.
+Desktop audio tests are local and excluded from Git. Reference recordings are never
+release assets. The tiny black, silent video fixture committed for file-only CI tests
+is synthetic and contains no desktop capture or user audio.
 
 ## Not yet validated
 
 Long-session perceptual A/V sync, audio-device disconnect and drift across different
-drivers remain unverified. Audio is one mixed stereo track, not separate OBS-style
-tracks. Software-only fallback, NVIDIA/Intel hardware,
+drivers remain unverified. The historical tests above used one mixed track;
+v0.1.2 adds 1–5 routed AAC streams with a separate file-only CI test. New release
+validation results are recorded in the release notes. Software-only fallback, NVIDIA/Intel hardware,
 Windows 10, other GPU drivers, multi-monitor/cross-adapter capture, HDR, RDP, screen
 lock, physical disconnects, display-mode changes, full disks, forced termination,
 and power loss remain outside the completed test matrix.

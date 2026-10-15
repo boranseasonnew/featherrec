@@ -648,7 +648,9 @@ impl FeatherRec {
                 .changed()
             {
                 self.prefs.recording.window = None;
-                if self.prefs.recording.audio.source == SystemAudio::Application {
+                if self.prefs.recording.audio.source == SystemAudio::Application
+                    && self.prefs.recording.audio.application.is_none()
+                {
                     self.prefs.recording.audio.source = SystemAudio::Off;
                 }
             }

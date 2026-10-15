@@ -205,8 +205,8 @@ impl Source {
             );
             let (frames, info) = self.capture.read_from_device(&mut self.bytes)?;
             if !info.flags.silent {
-                for value in self.bytes[..frames as usize * 8].chunks_exact(4) {
-                    let value = f32::from_le_bytes(value.try_into().unwrap());
+                for value in self.bytes[..frames as usize * 8].as_chunks::<4>().0 {
+                    let value = f32::from_le_bytes(*value);
                     if value.is_finite() {
                         peak = peak.max(value.abs());
                     }
@@ -296,7 +296,7 @@ impl Drop for Source {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct AudioPreviewState {
     pub running: bool,
     pub system_peak: f32,
@@ -524,10 +524,9 @@ impl AudioRecorder {
                         for source in &mut sources {
                             if let Err(error) =
                                 source.drain(base_time, base_time + elapsed, written, &metrics)
+                                && !source.follow_default(&config, process)?
                             {
-                                if !source.follow_default(&config, process)? {
-                                    return Err(error);
-                                }
+                                return Err(error);
                             }
                         }
                         let stopping = thread_stop.load(Ordering::Relaxed);

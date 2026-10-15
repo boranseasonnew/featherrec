@@ -135,8 +135,8 @@ processes, and never silently falls back to capturing all system audio. Add a mi
 only if wanted; choose its endpoint, level and mute independently. Levels and mute
 can change during recording. Device/source changes apply to the next recording.
 
-Audio is mixed locally into one 48 kHz stereo AAC track, rather than multiple independent
-OBS tracks. Recording uses a temporary PCM file (about 11.5 MB/minute, maximum 4 GiB),
+Audio is routed locally into 1–5 independent 48 kHz stereo AAC tracks. Each track
+uses a temporary PCM file (about 11.5 MB/minute per track, maximum 4 GiB per WAV),
 then a final audio encoding/mux pass without re-encoding H.264 video. Wait for completion.
 Successful validation removes the temporary files; failures retain them for recovery.
 
@@ -145,10 +145,13 @@ CLI examples:
 ```powershell
 ./target/release/featherrec-cli.exe --diagnose
 ./target/release/featherrec-cli.exe --audio-devices
+./target/release/featherrec-cli.exe --check-audio --seconds 5 --audio system
 ./target/release/featherrec-cli.exe --record --seconds 10 --output recordings
 ./target/release/featherrec-cli.exe --record --seconds 60 --preset balanced --fps 30 --monitor 1
 ./target/release/featherrec-cli.exe --record --seconds 10 --allow-software
 ./target/release/featherrec-cli.exe --record --seconds 10 --audio system --microphone
+./target/release/featherrec-cli.exe --record --seconds 10 --audio system --microphone --audio-tracks mix,system,mic
+./target/release/featherrec-cli.exe --record --seconds 10 --preset potato --cqp 24
 ./target/release/featherrec-cli.exe --record --seconds 10 --window-title "My Game" --audio application
 ```
 

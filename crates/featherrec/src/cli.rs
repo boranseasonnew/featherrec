@@ -25,7 +25,7 @@ fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|v| v == "--help" || v == "-h") {
         println!(
-            "FeatherRec 0.1.2\n\nfeatherrec-cli --diagnose\nfeatherrec-cli --audio-devices\nfeatherrec-cli --record --seconds 10 [--output DIR] [--monitor 1]\n    [--window-title UNIQUE_SUBSTRING]\n    [--preset compact|potato|smooth720|balanced30|balanced|quality]\n    [--resolution 720|1080] [--fps 30|60] [--bitrate 4000000] [--cqp 16..51]\n    [--allow-software] [--no-cursor] [--show-border]\n    [--buffers 3..8] [--no-low-latency] [--no-report]\n    [--audio none|system|application] [--output-device ID]\n    [--microphone] [--microphone-device ID] [--mute-microphone]\n    [--audio-tracks mix,system,mic,silent (1..5)]\n\nH.264/MP4 with optional 1..5 independently routed stereo AAC tracks. Microphone defaults off.\nApplication audio requires a selected window; no system-audio fallback.\nFPS is a ceiling; static content uses variable frame rate.\nHardware must be verified by default. Ctrl+C stops and finalizes the MP4."
+            "FeatherRec 0.1.2\n\nfeatherrec-cli --diagnose\nfeatherrec-cli --audio-devices\nfeatherrec-cli --check-audio --seconds 5 [--audio system|application] [--microphone]\nfeatherrec-cli --record --seconds 10 [--output DIR] [--monitor 1]\n    [--window-title UNIQUE_SUBSTRING]\n    [--preset compact|potato|smooth720|balanced30|balanced|quality]\n    [--resolution 720|1080] [--fps 30|60] [--bitrate 4000000] [--cqp 16..51]\n    [--allow-software] [--no-cursor] [--show-border]\n    [--buffers 3..8] [--no-low-latency] [--no-report]\n    [--audio none|system|application] [--output-device ID]\n    [--microphone] [--microphone-device ID] [--mute-microphone]\n    [--audio-tracks mix,system,mic,silent (1..5)]\n\nH.264/MP4 with optional 1..5 independently routed stereo AAC tracks. Microphone defaults off.\nApplication audio requires a selected window; no system-audio fallback.\nFPS is a ceiling; static content uses variable frame rate.\nHardware must be verified by default. Ctrl+C stops and finalizes the MP4."
         );
         return Ok(());
     }
@@ -43,11 +43,15 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
+    let audio_check = args.first().is_some_and(|s| s == "--check-audio");
     ensure!(
-        args.first().is_some_and(|s| s == "--record"),
+        audio_check || args.first().is_some_and(|s| s == "--record"),
         "Use --help for commands"
     );
     let mut settings = Settings::default();
+    if audio_check {
+        settings.audio.source = SystemAudio::System;
+    }
     let mut seconds: Option<u64> = None;
     let mut i = 1;
     while i < args.len() {
@@ -167,6 +171,34 @@ fn run() -> Result<()> {
         (1..=86_400).contains(&seconds),
         "Duration must be 1 to 86400 seconds"
     );
+    if audio_check {
+        ensure!(seconds <= 60, "Audio checks must be 1 to 60 seconds");
+        settings.validate()?;
+        let preview = recording_windows::AudioPreview::start(&settings)?;
+        let started = Instant::now();
+        let mut peak = [0.0f32; 2];
+        let mut final_state;
+        loop {
+            final_state = preview.snapshot();
+            if let Some(error) = &final_state.error {
+                bail!("{error}");
+            }
+            peak[0] = peak[0].max(final_state.system_peak);
+            peak[1] = peak[1].max(final_state.microphone_peak);
+            if started.elapsed() >= Duration::from_secs(seconds) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        ensure!(
+            final_state.running,
+            "Audio source did not initialize during the check"
+        );
+        final_state.system_peak = peak[0];
+        final_state.microphone_peak = peak[1];
+        println!("{}", serde_json::to_string_pretty(&final_state)?);
+        return Ok(());
+    }
     unsafe {
         SetConsoleCtrlHandler(Some(stop_handler), true)?;
     }

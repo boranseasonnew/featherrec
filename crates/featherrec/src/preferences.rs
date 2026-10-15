@@ -122,7 +122,7 @@ impl Preferences {
     pub fn validate(&self) -> Result<()> {
         // A saved process/window handle is intentionally not reused after restart.
         let mut settings = self.recording.clone();
-        if settings.window.is_none() {
+        if settings.window.is_none() && settings.audio.application.is_none() {
             settings.audio.source = recorder_core::SystemAudio::Off;
         }
         settings.validate()?;

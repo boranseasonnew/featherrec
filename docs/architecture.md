@@ -87,14 +87,16 @@ WASAPI packet QPC timestamps are rebased against the first WGC system-relative t
 Each source has a fixed one-second tagged sample ring; a 100 ms jitter window permits
 packet arrival before clocked mixing. Late packets/discontinuities are counted, timing
 overflow fails explicitly, and missing samples become silence. Live gains and mic mute
-use atomics. Mixing clips to PCM16 and writes bounded chunks to a local WAV. Memory does
-not grow with recording duration. WAV storage is about 11.5 MB/minute, with a 4 GiB limit.
+use atomics. Routing clips to PCM16 and writes bounded chunks to one WAV per track.
+Memory does not grow with recording duration. WAV storage is about 11.5 MB/minute
+per track, with a 4 GiB limit per WAV.
 
 On stop, capture time is frozen for video and audio. After workers drain, a separate
 Media Foundation pass copies compressed H.264 samples and encodes mixed PCM as stereo AAC.
 This avoids a second video encode but adds temporary storage and finalization time.
-The MP4 contains one mixed audio track. Audio is decoded once and video dimensions/first
-frame are checked before promoting the output; full-file decoding remains external QA.
+The MP4 contains the selected 1–5 audio streams. Each audio stream is decoded once and
+video dimensions/first frame are checked before promoting the output; full-file
+decoding remains external QA.
 Temporary video/WAV files are removed only after validated promotion. Audio-device
 failure is explicit and stops recording. Long-session drift and hot-unplug need more tests.
 
@@ -130,8 +132,6 @@ There is no global keyboard hook. Window handles are never persisted across rest
 Advanced controls expose bitrate, encoder fallback, frame-pool size, low latency and
 report writing behind an explicit unlock. Output verification cannot be disabled.
 
-## References
-
 Audio output consists of 1–5 bounded per-track PCM writers. System/application and
 microphone samples share the video origin, then route to each track independently.
 Finalization copies compressed video and encodes each WAV to a separate AAC stream;
@@ -150,6 +150,8 @@ a monitor. No process identifiers are restored across application restarts.
 CQP uses the selected transform's ICodecAPI before BeginWriting: quality mode plus
 AVEncVideoEncodeQP. Both values must read back correctly; unsupported or ignored
 properties cause initialization failure. No claim is made that CQP improves speed.
+
+## References
 
 - [windows-capture source and MIT license](https://github.com/NiiightmareXD/windows-capture)
 - [Media Foundation Sink Writer](https://learn.microsoft.com/en-us/windows/win32/medfound/sink-writer)
