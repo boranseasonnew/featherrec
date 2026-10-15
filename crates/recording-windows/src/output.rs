@@ -23,16 +23,14 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            Self(
-                std::env::temp_dir().join(format!(
+            Self(std::env::temp_dir().join(format!(
                     "featherrec-output-{}-{}",
                     std::process::id(),
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_nanos()
-                )),
-            )
+                )))
         }
     }
     impl Drop for Fixture {
