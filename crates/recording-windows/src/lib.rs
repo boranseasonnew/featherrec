@@ -3,6 +3,7 @@ mod capture;
 mod encoder;
 mod inspect;
 mod mux;
+mod output;
 mod scaler;
 
 pub use audio::{

@@ -335,8 +335,7 @@ pub fn start_with_audio_controls(
     controls: Arc<AudioControls>,
 ) -> Result<Recording> {
     settings.validate()?;
-    fs::create_dir_all(&settings.output_dir).context("Cannot create output folder")?;
-    let folder = fs::canonicalize(&settings.output_dir)?;
+    let folder = crate::output::prepare_folder(&settings.output_dir)?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let stem = format!("FeatherRec-{stamp}-{}", std::process::id());
     let partial = folder.join(format!("{stem}.partial.mp4"));
@@ -345,7 +344,8 @@ pub fn start_with_audio_controls(
     fs::OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(&partial)?;
+        .open(&partial)
+        .with_context(|| format!("Kayıt klasörüne dosya yazılamadı: {}. Kayıt konumunu değiştir veya klasörün yazma izinlerini kontrol et.", settings.output_dir.display()))?;
     let _runtime = MediaRuntime::new()?;
     let target = if let Some(selection) = &settings.window {
         let w = Window::from_raw_hwnd(selection.handle as *mut std::ffi::c_void);

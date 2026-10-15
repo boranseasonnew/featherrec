@@ -14,6 +14,13 @@ pub fn settings_path() -> Result<PathBuf> {
     Ok(PathBuf::from(root).join("FeatherRec/settings.json"))
 }
 
+pub fn recordings_path() -> Result<PathBuf> {
+    Ok(settings_path()?
+        .parent()
+        .context("Kullanıcı kayıt klasörü bulunamadı")?
+        .join("Recordings"))
+}
+
 pub fn load(path: &Path, legacy: &Path) -> Result<Option<Preferences>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,

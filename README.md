@@ -126,7 +126,8 @@ Preferences are saved in `%LOCALAPPDATA%\FeatherRec\settings.json` when **Ayarla
 kaydet** is selected. Saving finishes before the success message, independently of
 global-hotkey registration. Settings survive restarts, installation and moving the
 EXE. A valid legacy `featherrec-settings.json` beside the EXE is imported once when
-the user profile has no settings yet. Default recordings go to `Videos\FeatherRec`;
+the user profile has no settings yet. New profiles record to
+`%LOCALAPPDATA%\FeatherRec\Recordings`, avoiding the default protected Videos folder;
 an existing saved output folder is preserved. Failed writes produce a visible error.
 
 In **Ayarlar → Ses**, choose system sound or only the selected application's sound.

@@ -123,6 +123,13 @@ settings and rolls the shortcut selection back. Legacy portable preferences migr
 only when the per-user file is absent. Runtime code has
 no network communication. Dependency downloads and GitHub CI are build-time concerns.
 
+New GUI profiles use Local AppData/FeatherRec/Recordings. A previously chosen output
+folder is preserved, and the dashboard exposes its path and a settings shortcut.
+General settings can explicitly restore and save the per-user recording folder.
+Output-directory creation, resolution and first-file creation report the selected
+path on failure. Protected-folder restrictions remain enforced by Windows; FeatherRec
+does not change security policies or silently redirect a custom output selection.
+
 The Turkish UI has a recorder dashboard and five settings pages. Engine/source controls
 are locked during capture; microphone mute and source gains stay live. A dedicated
 blocking Windows message thread uses RegisterHotKey and MOD_NOREPEAT, wakes the GUI even

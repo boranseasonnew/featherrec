@@ -108,10 +108,8 @@ impl FeatherRec {
             });
         let default = || {
             Preferences::new(Settings {
-                output_dir: std::env::var_os("USERPROFILE")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(portable_root)
-                    .join("Videos/FeatherRec"),
+                output_dir: storage::recordings_path()
+                    .unwrap_or_else(|_| portable_root().join("recordings")),
                 ..Settings::default()
             })
         };

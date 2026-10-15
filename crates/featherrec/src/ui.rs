@@ -380,6 +380,22 @@ impl FeatherRec {
                     );
                 }
             });
+            ui.horizontal_wrapped(|ui| {
+                caption(
+                    ui,
+                    format!("Konum: {}", self.prefs.recording.output_dir.display()),
+                );
+                if ui
+                    .add_enabled(
+                        self.job.is_none(),
+                        egui::Button::new("Kayıt konumunu değiştir"),
+                    )
+                    .clicked()
+                {
+                    self.page = Page::Settings;
+                    self.settings_tab = SettingsTab::General;
+                }
+            });
         });
         card(
             ui,
@@ -525,7 +541,7 @@ impl FeatherRec {
             "MP4 dosyaları bu klasöre kaydedilir.",
             |ui| {
                 ui.add_enabled_ui(self.job.is_none(), |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(self.prefs.recording.output_dir.display().to_string());
                         if ui.button("Değiştir").clicked()
                             && let Some(path) = rfd::FileDialog::new()
@@ -535,6 +551,13 @@ impl FeatherRec {
                             self.prefs.recording.output_dir = path;
                         }
                     });
+                    caption(ui, "Windows bazı kişisel klasörlere yazmayı engelleyebilir. Uygulamanın yerel kayıt klasörünü kullanabilir veya başka bir konum seçebilirsin.");
+                    if ui.button("Yerel kayıt klasörünü kullan ve kaydet").clicked() {
+                        match crate::storage::recordings_path() {
+                            Ok(path) => { self.prefs.recording.output_dir = path; self.save(); }
+                            Err(error) => self.notice = Some((format!("{error:#}"), true)),
+                        }
+                    }
                 });
             },
         );
