@@ -539,7 +539,7 @@ impl Recording {
             let muxed = self.partial.with_extension("mux.mp4");
             match mux_audio(
                 &self.partial,
-                &audio.path,
+                &audio.paths,
                 &muxed,
                 self.settings.audio.bitrate,
             ) {
@@ -575,7 +575,9 @@ impl Recording {
             Err(error) => (active_partial, false, format!("{error:#}")),
         };
         if finalized && let Some(audio) = &self.audio {
-            let _ = fs::remove_file(&audio.path);
+            for path in &audio.paths {
+                let _ = fs::remove_file(path);
+            }
             let _ = fs::remove_file(&self.partial);
         }
         let mut metrics = self.metrics.lock().unwrap().clone();

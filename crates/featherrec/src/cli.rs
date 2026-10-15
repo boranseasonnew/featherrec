@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
-use recorder_core::{EncoderPolicy, Metrics, Preset, Settings, SystemAudio};
+use recorder_core::{
+    AudioTrack, EncoderPolicy, Metrics, Preset, RateControl, Settings, SystemAudio,
+};
 use std::{
     sync::{
         Arc, Mutex,
@@ -23,7 +25,7 @@ fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|v| v == "--help" || v == "-h") {
         println!(
-            "FeatherRec 0.1.1\n\nfeatherrec-cli --diagnose\nfeatherrec-cli --audio-devices\nfeatherrec-cli --record --seconds 10 [--output DIR] [--monitor 1]\n    [--window-title UNIQUE_SUBSTRING]\n    [--preset compact|potato|smooth720|balanced30|balanced|quality]\n    [--resolution 720|1080] [--fps 30|60] [--bitrate 4000000]\n    [--allow-software] [--no-cursor] [--show-border]\n    [--buffers 3..8] [--no-low-latency] [--no-report]\n    [--audio none|system|application] [--output-device ID]\n    [--microphone] [--microphone-device ID] [--mute-microphone]\n\nH.264/MP4 with optional mixed stereo AAC audio. Microphone defaults off.\nApplication audio requires a selected window; no system-audio fallback.\nFPS is a ceiling; static content uses variable frame rate.\nHardware must be verified by default. Ctrl+C stops and finalizes the MP4."
+            "FeatherRec 0.1.2\n\nfeatherrec-cli --diagnose\nfeatherrec-cli --audio-devices\nfeatherrec-cli --record --seconds 10 [--output DIR] [--monitor 1]\n    [--window-title UNIQUE_SUBSTRING]\n    [--preset compact|potato|smooth720|balanced30|balanced|quality]\n    [--resolution 720|1080] [--fps 30|60] [--bitrate 4000000] [--cqp 16..51]\n    [--allow-software] [--no-cursor] [--show-border]\n    [--buffers 3..8] [--no-low-latency] [--no-report]\n    [--audio none|system|application] [--output-device ID]\n    [--microphone] [--microphone-device ID] [--mute-microphone]\n    [--audio-tracks mix,system,mic,silent (1..5)]\n\nH.264/MP4 with optional 1..5 independently routed stereo AAC tracks. Microphone defaults off.\nApplication audio requires a selected window; no system-audio fallback.\nFPS is a ceiling; static content uses variable frame rate.\nHardware must be verified by default. Ctrl+C stops and finalizes the MP4."
         );
         return Ok(());
     }
@@ -117,6 +119,31 @@ fn run() -> Result<()> {
                 settings.window = matches.into_iter().next();
             }
             "--bitrate" => settings.bitrate = value.parse()?,
+            "--cqp" => {
+                settings.rate_control = RateControl::Cqp;
+                settings.qp = value.parse()?;
+            }
+            "--audio-tracks" => {
+                settings.audio.tracks = value
+                    .split(',')
+                    .map(|route| match route {
+                        "mix" => Ok(AudioTrack::default()),
+                        "system" => Ok(AudioTrack {
+                            system: true,
+                            microphone: false,
+                        }),
+                        "mic" => Ok(AudioTrack {
+                            system: false,
+                            microphone: true,
+                        }),
+                        "silent" => Ok(AudioTrack {
+                            system: false,
+                            microphone: false,
+                        }),
+                        _ => bail!("Audio track must be mix, system, mic, or silent"),
+                    })
+                    .collect::<Result<_>>()?;
+            }
             "--resolution" => match value.as_str() {
                 "720" => (settings.width, settings.height) = (1280, 720),
                 "1080" => (settings.width, settings.height) = (1920, 1080),

@@ -1,7 +1,7 @@
 use super::{FeatherRec, Page, SettingsTab};
 use crate::preferences::HotkeyBindings;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
-use recorder_core::{EncoderPolicy, Preset, SystemAudio};
+use recorder_core::{AudioTrack, EncoderPolicy, Preset, RateControl, SystemAudio};
 use std::sync::atomic::Ordering;
 
 const BG: Color32 = Color32::from_rgb(15, 18, 25);
@@ -40,6 +40,13 @@ pub fn install_theme(ctx: &egui::Context) {
 
 fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(RichText::new(text).color(MUTED).size(12.0));
+}
+fn meter_level(peak: f32) -> f32 {
+    if peak <= 0.000_001 {
+        0.0
+    } else {
+        ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+    }
 }
 fn card(ui: &mut egui::Ui, title: &str, subtitle: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
@@ -356,10 +363,14 @@ impl FeatherRec {
                 caption(
                     ui,
                     format!(
-                        "{}p · {} FPS hedef · {:.1} Mbps",
+                        "{}p · {} FPS hedef · {}",
                         self.prefs.recording.height,
                         self.prefs.recording.fps,
-                        self.prefs.recording.bitrate as f32 / 1e6
+                        if self.prefs.recording.rate_control == RateControl::Cqp {
+                            format!("CQP {}", self.prefs.recording.qp)
+                        } else {
+                            format!("{:.1} Mbps", self.prefs.recording.bitrate as f32 / 1e6)
+                        }
                     ),
                 );
                 if self.active_bindings.enabled {
@@ -481,7 +492,7 @@ impl FeatherRec {
                 card(
                     ui,
                     "Ses kaynakları",
-                    "Tek bir MP4 ses parçasında karıştırılır. Mikrofon varsayılan olarak kapalıdır.",
+                    "Giriş, çıkış ve uygulama sesini seç. Mikrofon varsayılan olarak kapalıdır.",
                     |ui| self.audio_controls(ui, true),
                 );
                 card(ui, "Ses kalitesi", "AAC · 48 kHz · stereo", |ui| {
@@ -498,7 +509,7 @@ impl FeatherRec {
                     });
                     caption(
                         ui,
-                        "Ses, durdurduğunda MP4'e eklenir. Bu aşama kısa bir süre alabilir; geçici ses dosyası yaklaşık 11 MB/dakika yer kullanır.",
+                        "Ses, durdurduğunda MP4'e eklenir. Her parça yaklaşık 11 MB/dakika geçici disk alanı kullanır; daha çok parça, daha uzun sonlandırma ve daha büyük dosya demektir.",
                     );
                 });
             }
@@ -585,7 +596,7 @@ impl FeatherRec {
         card(
             ui,
             "Kayıt profilleri",
-            "Profil yalnızca çözünürlük, FPS ve video bit hızını değiştirir.",
+            "Profil çözünürlük, FPS ve video bit hızını ayarlar; bit hızı moduna döner.",
             |ui| {
                 ui.add_enabled_ui(self.job.is_none(), |ui| {
                     egui::Grid::new("presets")
@@ -737,7 +748,16 @@ impl FeatherRec {
             .as_ref()
             .map(|h| h.audio_devices.clone())
             .unwrap_or_default();
-        let m = self.metrics.lock().unwrap().clone();
+        let preview = self.audio_preview.as_ref().map(|p| p.snapshot());
+        let m = if self.job.is_some() {
+            self.metrics.lock().unwrap().clone()
+        } else {
+            Default::default()
+        };
+        let system_peak = preview.as_ref().map_or(m.system_peak, |p| p.system_peak);
+        let microphone_peak = preview
+            .as_ref()
+            .map_or(m.microphone_peak, |p| p.microphone_peak);
         ui.add_enabled_ui(self.job.is_none(), |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Bilgisayar sesi");
@@ -757,35 +777,125 @@ impl FeatherRec {
                         }
                     });
             });
-            if self.prefs.recording.audio.source == SystemAudio::Application
-                && self.prefs.recording.window.is_none()
-            {
-                ui.colored_label(
-                    RED,
-                    "Yalnızca uygulama sesi için Kayıt bölümünden bir pencere seç.",
-                );
+            if self.prefs.recording.audio.source == SystemAudio::Application {
+                egui::ComboBox::from_id_salt("audio_application")
+                    .width(ui.available_width().min(580.0))
+                    .selected_text(
+                        self.prefs
+                            .recording
+                            .audio
+                            .application
+                            .as_ref()
+                            .map_or("Görüntü için seçilen uygulama", |w| w.title.as_str()),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.prefs.recording.audio.application,
+                            None,
+                            "Görüntü için seçilen uygulama",
+                        );
+                        if let Some(h) = &self.hardware {
+                            for window in &h.windows {
+                                ui.selectable_value(
+                                    &mut self.prefs.recording.audio.application,
+                                    Some(window.clone()),
+                                    &window.title,
+                                );
+                            }
+                        }
+                    });
+                if self.prefs.recording.audio.application.is_none()
+                    && self.prefs.recording.window.is_none()
+                {
+                    ui.colored_label(RED, "Sesini yakalayacağın uygulamayı seç.");
+                }
             }
-            if detailed && self.prefs.recording.audio.source == SystemAudio::System {
+            if self.prefs.recording.audio.source == SystemAudio::System {
+                caption(ui, "Çıkış aygıtı · bilgisayar sesi bu aygıttan alınır");
                 device_combo(
                     ui,
                     "system_device",
                     &mut self.prefs.recording.audio.output_device,
                     &devices.outputs,
                 );
+                if self.prefs.recording.audio.output_device.is_empty() {
+                    caption(
+                        ui,
+                        format!(
+                            "Windows varsayılanı: {}",
+                            devices
+                                .default_output
+                                .as_ref()
+                                .map_or("Aygıt bulunamadı", |d| d.name.as_str())
+                        ),
+                    );
+                }
             }
             ui.checkbox(
                 &mut self.prefs.recording.audio.microphone,
                 "Mikrofonu kayda ekle",
             );
-            if detailed && self.prefs.recording.audio.microphone {
+            if self.prefs.recording.audio.microphone {
+                caption(ui, "Giriş aygıtı · mikrofon");
                 device_combo(
                     ui,
                     "microphone_device",
                     &mut self.prefs.recording.audio.microphone_device,
                     &devices.microphones,
                 );
+                if self.prefs.recording.audio.microphone_device.is_empty() {
+                    caption(
+                        ui,
+                        format!(
+                            "Windows varsayılanı: {}",
+                            devices
+                                .default_microphone
+                                .as_ref()
+                                .map_or("Aygıt bulunamadı", |d| d.name.as_str())
+                        ),
+                    );
+                }
             }
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button(if self.audio_preview.is_some() {
+                        "Ses denemesini bitir"
+                    } else {
+                        "Ses denemesini başlat"
+                    })
+                    .clicked()
+                {
+                    if self.audio_preview.take().is_some() {
+                        self.preview_settings = None;
+                    } else {
+                        match recording_windows::AudioPreview::start(&self.prefs.recording) {
+                            Ok(preview) => {
+                                self.preview_settings = Some(self.prefs.recording.clone());
+                                self.audio_preview = Some(preview);
+                            }
+                            Err(error) => self.notice = Some((format!("{error:#}"), true)),
+                        }
+                    }
+                }
+                if ui.small_button("Aygıtları yenile").clicked() {
+                    self.refresh_sources(ui.ctx());
+                }
+            });
         });
+        if let Some(preview) = &preview {
+            if let Some(error) = &preview.error {
+                ui.colored_label(RED, error);
+            } else if preview.running {
+                caption(ui, format!("Ölçülüyor: {}", preview.devices.join(" · ")));
+            } else {
+                caption(ui, "Ses aygıtları açılıyor…");
+            }
+        } else if self.job.is_none() {
+            caption(
+                ui,
+                "Göstergeyi kayıt öncesinde görmek için ses denemesini başlat. Ses çalınmaz ve dosya yazılmaz.",
+            );
+        }
         ui.add_space(4.0);
         if self.prefs.recording.audio.source != SystemAudio::Off {
             ui.horizontal(|ui| {
@@ -796,9 +906,9 @@ impl FeatherRec {
                 );
             });
             ui.add(
-                egui::ProgressBar::new(m.system_peak.clamp(0.0, 1.0))
+                egui::ProgressBar::new(meter_level(system_peak))
                     .fill(GREEN)
-                    .desired_height(5.0),
+                    .desired_height(8.0),
             );
         }
         if self.prefs.recording.audio.microphone {
@@ -811,19 +921,19 @@ impl FeatherRec {
                 ui.checkbox(&mut self.prefs.recording.audio.microphone_muted, "Sustur");
             });
             ui.add(
-                egui::ProgressBar::new(m.microphone_peak.clamp(0.0, 1.0))
+                egui::ProgressBar::new(meter_level(microphone_peak))
                     .fill(if self.prefs.recording.audio.microphone_muted {
                         MUTED
                     } else {
                         GREEN
                     })
-                    .desired_height(5.0),
+                    .desired_height(8.0),
             );
         }
         if detailed {
             caption(
                 ui,
-                "Seviye çubukları yalnızca kayıttayken ölçülür. Susturma ve ses seviyeleri kayıt sırasında da değiştirilebilir.",
+                "Susturma ve ses seviyeleri kayıt sırasında da değiştirilebilir. Windows varsayılanı seçilirse hoparlör/kulaklık değişimi takip edilir; belirli aygıt seçimi sabit kalır.",
             );
             if self.prefs.recording.audio.source == SystemAudio::Application {
                 caption(
@@ -838,9 +948,80 @@ impl FeatherRec {
             {
                 ui.colored_label(RED, error);
             }
-            if ui.button("Ses aygıtlarını yenile").clicked() {
-                self.refresh_sources(ui.ctx());
+            self.audio_tracks(ui);
+        } else if ui.small_button("Ses parçalarını ayarla").clicked() {
+            self.page = Page::Settings;
+            self.settings_tab = SettingsTab::Audio;
+        }
+        if self.job.is_some() || self.audio_preview.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn audio_tracks(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label(RichText::new("MP4 ses parçaları").strong());
+        caption(
+            ui,
+            "Seçtiğin sayıda ayrı ses akışı yazılır. Editörün çoklu MP4 ses akışını desteklemelidir; bazı editörlerde parçaları ayrıca etkinleştirmek gerekir. Oynatıcı genellikle yalnızca ilk parçayı çalar.",
+        );
+        ui.add_enabled_ui(self.job.is_none(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Parça sayısı");
+                for count in 1..=5 {
+                    if ui
+                        .selectable_label(
+                            self.prefs.recording.audio.tracks.len() == count,
+                            count.to_string(),
+                        )
+                        .clicked()
+                    {
+                        self.prefs
+                            .recording
+                            .audio
+                            .tracks
+                            .resize_with(count, || AudioTrack {
+                                system: false,
+                                microphone: false,
+                            });
+                    }
+                }
+            });
+            if ui
+                .button("Önerilen: 1 karışım · 2 oyun/sistem · 3 mikrofon")
+                .clicked()
+            {
+                self.prefs.recording.audio.tracks = vec![
+                    AudioTrack::default(),
+                    AudioTrack {
+                        system: true,
+                        microphone: false,
+                    },
+                    AudioTrack {
+                        system: false,
+                        microphone: true,
+                    },
+                ];
             }
+            egui::Grid::new("audio_track_routing").show(ui, |ui| {
+                ui.label("Parça");
+                ui.label("Oyun / sistem");
+                ui.label("Mikrofon");
+                ui.end_row();
+                for (index, track) in self.prefs.recording.audio.tracks.iter_mut().enumerate() {
+                    ui.label((index + 1).to_string());
+                    ui.checkbox(&mut track.system, "");
+                    ui.checkbox(&mut track.microphone, "");
+                    if !track.system && !track.microphone {
+                        caption(ui, "Boş parça · sessizlik");
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        if !self.prefs.recording.audio.enabled() {
+            caption(ui, "Ses kaynakları kapalıyken MP4'e ses parçası eklenmez.");
         }
     }
 
@@ -918,9 +1099,19 @@ impl FeatherRec {
         );
         ui.add_enabled_ui(self.advanced_unlocked && self.job.is_none(),|ui| {
             card(ui,"Kodlama","Varsayılan ayarlar çoğu kayıt için yeterlidir.",|ui| {
-                let mut mbps=self.prefs.recording.bitrate as f64/1e6;
-                if ui.add(egui::Slider::new(&mut mbps,1.0..=50.0).step_by(0.5).text("Video bit hızı · Mbps")).changed() { self.prefs.recording.bitrate=(mbps*1e6) as u32; }
-                caption(ui,"Yüksek bit hızı daha fazla ayrıntı ve daha büyük dosya demektir. Kodlama yükü de artabilir.");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Kalite kontrolü");
+                    ui.selectable_value(&mut self.prefs.recording.rate_control, RateControl::Bitrate, "Bit hızı · varsayılan");
+                    ui.selectable_value(&mut self.prefs.recording.rate_control, RateControl::Cqp, "CQP · donanıma bağlı");
+                });
+                if self.prefs.recording.rate_control == RateControl::Cqp {
+                    ui.add(egui::Slider::new(&mut self.prefs.recording.qp,16..=51).text("QP"));
+                    caption(ui,"Düşük QP daha yüksek kalite ve büyük dosya demektir. Başlangıç: 24. Kodlayıcı desteklemiyorsa kayıt açıklayıcı hatayla durur; sessizce başka moda geçilmez. CQP tek başına performans modu değildir.");
+                } else {
+                    let mut mbps=self.prefs.recording.bitrate as f64/1e6;
+                    if ui.add(egui::Slider::new(&mut mbps,1.0..=50.0).step_by(0.5).text("Video bit hızı · Mbps")).changed() { self.prefs.recording.bitrate=(mbps*1e6) as u32; }
+                    caption(ui,"Yüksek bit hızı daha fazla ayrıntı ve daha büyük dosya demektir. Kodlama yükü de artabilir.");
+                }
                 ui.checkbox(&mut self.prefs.recording.low_latency,"Düşük gecikmeli kodlama");
                 let mut software=self.prefs.recording.encoder==EncoderPolicy::AllowSoftware;
                 if ui.checkbox(&mut software,"Donanım kullanılamazsa yazılımla kodlamaya izin ver").changed() { self.prefs.recording.encoder=if software { EncoderPolicy::AllowSoftware } else { EncoderPolicy::Hardware }; }
@@ -931,7 +1122,7 @@ impl FeatherRec {
                 caption(ui,"Daha fazla tampon ani yükleri karşılayabilir; GPU belleği ve gecikme artar. Varsayılan: 4.");
                 ui.checkbox(&mut self.prefs.recording.write_report,"Kaydın yanına yerel tanılama raporu yaz");
                 caption(ui,"Rapor; kayıt ayarlarını, hata ve performans ölçümlerini içerir. MP4 doğrulaması her zaman çalışır.");
-                if ui.button("Gelişmiş varsayılanları geri yükle").clicked() { self.prefs.recording.buffer_frames=4; self.prefs.recording.low_latency=true; self.prefs.recording.encoder=EncoderPolicy::Hardware; self.prefs.recording.write_report=true; self.prefs.recording.bitrate=match self.prefs.recording.preset { Preset::Compact=>2_500_000,Preset::Potato=>4_000_000,Preset::Smooth720|Preset::Balanced30=>6_000_000,Preset::Balanced=>8_000_000,Preset::Quality=>16_000_000 }; }
+                if ui.button("Gelişmiş varsayılanları geri yükle").clicked() { self.prefs.recording.buffer_frames=4; self.prefs.recording.low_latency=true; self.prefs.recording.encoder=EncoderPolicy::Hardware; self.prefs.recording.write_report=true; self.prefs.recording.rate_control=RateControl::Bitrate; self.prefs.recording.qp=24; self.prefs.recording.bitrate=match self.prefs.recording.preset { Preset::Compact=>2_500_000,Preset::Potato=>4_000_000,Preset::Smooth720|Preset::Balanced30=>6_000_000,Preset::Balanced=>8_000_000,Preset::Quality=>16_000_000 }; }
             });
         });
     }

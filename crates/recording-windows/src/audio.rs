@@ -33,6 +33,8 @@ pub struct AudioDevice {
 pub struct AudioDevices {
     pub outputs: Vec<AudioDevice>,
     pub microphones: Vec<AudioDevice>,
+    pub default_output: Option<AudioDevice>,
+    pub default_microphone: Option<AudioDevice>,
 }
 
 pub fn enumerate_audio_devices() -> Result<AudioDevices> {
@@ -53,6 +55,24 @@ pub fn enumerate_audio_devices() -> Result<AudioDevices> {
     Ok(AudioDevices {
         outputs: list(Direction::Render)?,
         microphones: list(Direction::Capture)?,
+        default_output: enumerator
+            .get_default_device(&Direction::Render)
+            .ok()
+            .and_then(|d| {
+                Some(AudioDevice {
+                    id: d.get_id().ok()?,
+                    name: d.get_friendlyname().ok()?,
+                })
+            }),
+        default_microphone: enumerator
+            .get_default_device(&Direction::Capture)
+            .ok()
+            .and_then(|d| {
+                Some(AudioDevice {
+                    id: d.get_id().ok()?,
+                    name: d.get_friendlyname().ok()?,
+                })
+            }),
     })
 }
 
@@ -94,10 +114,14 @@ struct Source {
     tags: Vec<i64>,
     microphone: bool,
     anchor: Option<(u64, i64)>,
+    device_id: String,
+    label: String,
 }
 
 impl Source {
     fn new(settings: &AudioSettings, microphone: bool, process: Option<u32>) -> Result<Self> {
+        let mut device_id = String::new();
+        let mut label = String::from("Uygulama sesi");
         let mut client = if !microphone && settings.source == SystemAudio::Application {
             AudioClient::new_application_loopback_client(process.context("Select the game's window first")?, true)
                 .context("Application-only audio needs Windows build 20348 or later and a running target process; it will not fall back to system audio")?
@@ -118,6 +142,8 @@ impl Source {
             } else {
                 enumerator.get_device(id)?
             };
+            device_id = device.get_id()?;
+            label = device.get_friendlyname()?;
             device.get_iaudioclient()?
         };
         let format = WaveFormat::new(32, 32, &SampleType::Float, RATE, 2, None);
@@ -135,7 +161,59 @@ impl Source {
             tags: vec![-1; RING],
             microphone,
             anchor: None,
+            device_id,
+            label,
         })
+    }
+
+    fn follow_default(&mut self, settings: &AudioSettings, process: Option<u32>) -> Result<bool> {
+        let id = if self.microphone {
+            &settings.microphone_device
+        } else {
+            &settings.output_device
+        };
+        if !id.is_empty() || (!self.microphone && settings.source == SystemAudio::Application) {
+            return Ok(false);
+        }
+        let direction = if self.microphone {
+            Direction::Capture
+        } else {
+            Direction::Render
+        };
+        let default = DeviceEnumerator::new()?
+            .get_default_device(&direction)?
+            .get_id()?;
+        if default == self.device_id {
+            return Ok(false);
+        }
+        let mut next = Self::new(settings, self.microphone, process)?;
+        std::mem::swap(&mut next.samples, &mut self.samples);
+        std::mem::swap(&mut next.tags, &mut self.tags);
+        *self = next;
+        Ok(true)
+    }
+
+    fn peak(&mut self) -> Result<f32> {
+        let mut peak = 0.0f32;
+        while let Some(count) = self.capture.get_next_packet_size()? {
+            if count == 0 {
+                break;
+            }
+            ensure!(
+                count as usize <= RATE,
+                "Audio packet exceeds the preview buffer"
+            );
+            let (frames, info) = self.capture.read_from_device(&mut self.bytes)?;
+            if !info.flags.silent {
+                for value in self.bytes[..frames as usize * 8].chunks_exact(4) {
+                    let value = f32::from_le_bytes(value.try_into().unwrap());
+                    if value.is_finite() {
+                        peak = peak.max(value.abs());
+                    }
+                }
+            }
+        }
+        Ok(peak)
     }
 
     fn drain(&mut self, base: i64, now: i64, written: i64, metrics: &SharedMetrics) -> Result<()> {
@@ -218,6 +296,122 @@ impl Drop for Source {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct AudioPreviewState {
+    pub running: bool,
+    pub system_peak: f32,
+    pub microphone_peak: f32,
+    pub devices: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Capture-only meter: no file, playback, monitoring or video encoder is opened.
+pub struct AudioPreview {
+    stop: Arc<AtomicBool>,
+    state: Arc<Mutex<AudioPreviewState>>,
+    worker: Option<JoinHandle<()>>,
+    pub controls: Arc<AudioControls>,
+}
+impl AudioPreview {
+    pub fn start(settings: &Settings) -> Result<Self> {
+        ensure!(
+            settings.audio.enabled(),
+            "Önce sistem, uygulama veya mikrofon sesini aç."
+        );
+        let config = settings.audio.clone();
+        let process = config
+            .application
+            .as_ref()
+            .or(settings.window.as_ref())
+            .map(|w| w.process);
+        let controls = Arc::new(AudioControls::new(&config));
+        let worker_controls = controls.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let state = Arc::new(Mutex::new(AudioPreviewState::default()));
+        let thread_state = state.clone();
+        let worker = thread::Builder::new()
+            .name("featherrec-audio-preview".into())
+            .spawn(move || {
+                let result = (|| -> Result<()> {
+                    let _runtime = MediaRuntime::new()?;
+                    let mut sources = Vec::with_capacity(2);
+                    if config.source != SystemAudio::Off {
+                        sources.push(Source::new(&config, false, process)?);
+                    }
+                    if config.microphone {
+                        sources.push(Source::new(&config, true, process)?);
+                    }
+                    let mut device_check = Instant::now();
+                    while !thread_stop.load(Ordering::Relaxed) {
+                        let handles: Vec<_> = sources.iter().map(|s| s.event.as_handle()).collect();
+                        let wait = unsafe { WaitForMultipleObjects(&handles, false, 20) };
+                        ensure!(wait != WAIT_FAILED, "Ses aygıtı beklenirken hata oluştu");
+                        if device_check.elapsed().as_secs() >= 1 {
+                            for source in &mut sources {
+                                source.follow_default(&config, process)?;
+                            }
+                            device_check = Instant::now();
+                        }
+                        let mut peaks = [0.0f32; 2];
+                        for source in &mut sources {
+                            let peak = match source.peak() {
+                                Ok(peak) => peak,
+                                Err(error) => {
+                                    if source.follow_default(&config, process)? {
+                                        0.0
+                                    } else {
+                                        return Err(error);
+                                    }
+                                }
+                            };
+                            let gain = if source.microphone {
+                                if worker_controls.microphone_muted.load(Ordering::Relaxed) {
+                                    0.0
+                                } else {
+                                    f32::from_bits(
+                                        worker_controls.microphone_gain.load(Ordering::Relaxed),
+                                    )
+                                }
+                            } else {
+                                f32::from_bits(worker_controls.system_gain.load(Ordering::Relaxed))
+                            };
+                            peaks[usize::from(source.microphone)] = peak * gain;
+                        }
+                        let mut status = thread_state.lock().unwrap();
+                        status.running = true;
+                        status.system_peak = peaks[0].max(status.system_peak * 0.85);
+                        status.microphone_peak = peaks[1].max(status.microphone_peak * 0.85);
+                        status.devices = sources.iter().map(|s| s.label.clone()).collect();
+                    }
+                    Ok(())
+                })();
+                let mut status = thread_state.lock().unwrap();
+                status.running = false;
+                if let Err(error) = result {
+                    status.error = Some(format!("Ses denemesi: {error:#}"));
+                }
+            })?;
+        Ok(Self {
+            stop,
+            state,
+            worker: Some(worker),
+            controls,
+        })
+    }
+    pub fn snapshot(&self) -> AudioPreviewState {
+        self.state.lock().unwrap().clone()
+    }
+}
+impl Drop for AudioPreview {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 struct WaveWriter {
     file: File,
     bytes: u64,
@@ -257,7 +451,7 @@ impl WaveWriter {
 pub(crate) struct AudioRecorder {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<Result<()>>>,
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
 }
 
 impl AudioRecorder {
@@ -274,8 +468,16 @@ impl AudioRecorder {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let config = settings.audio.clone();
-        let process = settings.window.as_ref().map(|w| w.process);
-        let output = path.clone();
+        let process = settings
+            .audio
+            .application
+            .as_ref()
+            .or(settings.window.as_ref())
+            .map(|w| w.process);
+        let paths: Vec<_> = (0..config.tracks.len())
+            .map(|i| path.with_extension(format!("track{}.wav", i + 1)))
+            .collect();
+        let outputs = paths.clone();
         let (ready, started) = mpsc::sync_channel::<Result<(), String>>(1);
         let worker = thread::Builder::new()
             .name("featherrec-audio".into())
@@ -289,14 +491,18 @@ impl AudioRecorder {
                     if config.microphone {
                         sources.push(Source::new(&config, true, process)?);
                     }
-                    let mut writer = WaveWriter::new(&output)?;
-                    let handles: Vec<_> = sources.iter().map(|s| s.event.as_handle()).collect();
-                    let mut bytes = vec![0u8; CHUNK * 4];
+                    let mut writers: Vec<_> = outputs
+                        .iter()
+                        .map(|p| WaveWriter::new(p))
+                        .collect::<Result<_>>()?;
+                    let mut bytes = vec![vec![0u8; CHUNK * 4]; config.tracks.len()];
                     let mut written = 0i64;
+                    let mut device_check = Instant::now();
                     let _ = ready.send(Ok(()));
                     loop {
                         // Events wake on real audio. The timeout advances silence and
                         // bounds stop latency even when no application is playing sound.
+                        let handles: Vec<_> = sources.iter().map(|s| s.event.as_handle()).collect();
                         let wait = unsafe { WaitForMultipleObjects(&handles, false, 20) };
                         ensure!(wait != WAIT_FAILED, "Waiting for the audio device failed");
                         let base_time = base.load(Ordering::Relaxed);
@@ -304,8 +510,25 @@ impl AudioRecorder {
                             .lock()
                             .unwrap()
                             .map_or(0, |t| (t.elapsed().as_secs_f64() * 10_000_000.0) as i64);
+                        if device_check.elapsed().as_secs() >= 1 {
+                            for source in &mut sources {
+                                if source.follow_default(&config, process)? {
+                                    metrics.lock().unwrap().warning = Some(format!(
+                                        "Windows varsayılan ses aygıtına geçildi: {}",
+                                        source.label
+                                    ));
+                                }
+                            }
+                            device_check = Instant::now();
+                        }
                         for source in &mut sources {
-                            source.drain(base_time, base_time + elapsed, written, &metrics)?;
+                            if let Err(error) =
+                                source.drain(base_time, base_time + elapsed, written, &metrics)
+                            {
+                                if !source.follow_default(&config, process)? {
+                                    return Err(error);
+                                }
+                            }
                         }
                         let stopping = thread_stop.load(Ordering::Relaxed);
                         let end = if stopping {
@@ -325,7 +548,7 @@ impl AudioRecorder {
                             };
                             let mut peaks = [0.0f32; 2];
                             for index in 0..frames {
-                                let mut mixed = [0.0f32; 2];
+                                let mut source_samples = [[0.0f32; 2]; 2];
                                 for source in &sources {
                                     let gain = if source.microphone {
                                         mic_gain
@@ -338,16 +561,31 @@ impl AudioRecorder {
                                         let scaled = value * gain;
                                         peaks[usize::from(source.microphone)] =
                                             peaks[usize::from(source.microphone)].max(scaled.abs());
-                                        mixed[channel] += scaled;
+                                        source_samples[usize::from(source.microphone)][channel] +=
+                                            scaled;
                                     }
                                 }
-                                for (channel, value) in mixed.iter().enumerate() {
-                                    let pcm = (value.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-                                    bytes[index * 4 + channel * 2..index * 4 + channel * 2 + 2]
-                                        .copy_from_slice(&pcm.to_le_bytes());
+                                for (track, buffer) in config.tracks.iter().zip(&mut bytes) {
+                                    for channel in 0..2 {
+                                        let value = if track.system {
+                                            source_samples[0][channel]
+                                        } else {
+                                            0.0
+                                        } + if track.microphone {
+                                            source_samples[1][channel]
+                                        } else {
+                                            0.0
+                                        };
+                                        let pcm = (value.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                                        buffer
+                                            [index * 4 + channel * 2..index * 4 + channel * 2 + 2]
+                                            .copy_from_slice(&pcm.to_le_bytes());
+                                    }
                                 }
                             }
-                            writer.write(&bytes[..frames * 4])?;
+                            for (writer, buffer) in writers.iter_mut().zip(&bytes) {
+                                writer.write(&buffer[..frames * 4])?;
+                            }
                             written += frames as i64;
                             let mut m = metrics.lock().unwrap();
                             m.audio_frames = written as u64;
@@ -359,7 +597,9 @@ impl AudioRecorder {
                         }
                     }
                     drop(sources);
-                    writer.finish()?;
+                    for writer in writers {
+                        writer.finish()?;
+                    }
                     Ok(())
                 })();
                 if let Err(error) = &result {
@@ -373,7 +613,7 @@ impl AudioRecorder {
             Ok(Ok(())) => Ok(Self {
                 stop,
                 worker: Some(worker),
-                path,
+                paths,
             }),
             other => {
                 stop.store(true, Ordering::Relaxed);

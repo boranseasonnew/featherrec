@@ -70,6 +70,8 @@ struct FeatherRec {
     hardware: Option<HardwareInfo>,
     inspection: Receiver<Result<HardwareInfo, String>>,
     metrics: SharedMetrics,
+    audio_preview: Option<recording_windows::AudioPreview>,
+    preview_settings: Option<Settings>,
     job: Option<Job>,
     status: String,
     notice: Option<(String, bool)>,
@@ -183,6 +185,8 @@ impl FeatherRec {
             settings_tab,
             advanced_unlocked: false,
             window_filter: String::new(),
+            audio_preview: None,
+            preview_settings: None,
             hotkeys,
             active_bindings: HotkeyBindings {
                 enabled: false,
@@ -399,6 +403,8 @@ impl FeatherRec {
             self.notice = Some((error.to_string(), true));
             return;
         }
+        self.audio_preview.take();
+        self.preview_settings = None;
         self.metrics = Arc::new(Mutex::new(Metrics::default()));
         let metrics = self.metrics.clone();
         let settings = self.prefs.recording.clone();
@@ -507,6 +513,22 @@ impl FeatherRec {
 impl eframe::App for FeatherRec {
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.process_shortcuts(ctx);
+        if let Some(preview) = &self.audio_preview {
+            if self.preview_settings.as_ref().is_some_and(|s| {
+                s.audio.source != self.prefs.recording.audio.source
+                    || s.audio.microphone != self.prefs.recording.audio.microphone
+                    || s.audio.output_device != self.prefs.recording.audio.output_device
+                    || s.audio.microphone_device != self.prefs.recording.audio.microphone_device
+                    || s.audio.application != self.prefs.recording.audio.application
+                    || s.window != self.prefs.recording.window
+            }) {
+                self.audio_preview.take();
+                self.preview_settings = None;
+            } else {
+                preview.controls.update(&self.prefs.recording.audio);
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+        }
         let screenshots: Vec<_> = ctx.input(|i| {
             i.events
                 .iter()

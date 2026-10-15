@@ -95,6 +95,9 @@ mod tests {
         prefs.recording.audio.source = SystemAudio::System;
         prefs.recording.audio.system_gain = 0.3;
         prefs.recording.audio.microphone_muted = true;
+        prefs.recording.audio.tracks = vec![recorder_core::AudioTrack::default(); 5];
+        prefs.recording.rate_control = recorder_core::RateControl::Cqp;
+        prefs.recording.qp = 28;
         prefs.interface.countdown = 5;
         prefs.hotkeys.toggle.alt = true;
         save(&path, &prefs)?;

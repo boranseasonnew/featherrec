@@ -3,7 +3,7 @@
 <img src="assets/feather.svg" width="64" alt="FeatherRec feather logo">
 
 A focused Windows screen recorder written in Rust. Local H.264/MP4 capture, a
-small dark desktop UI, and bounded GPU frame ownership. No preview, browser runtime,
+small dark desktop UI, and bounded GPU frame ownership. No video preview, browser runtime,
 accounts, advertisements, analytics, or cloud processing.
 
 **Status: experimental desktop recorder with audio.** This is an initial functional
@@ -49,8 +49,23 @@ administrator access is not required. The portable EXE remains available.
 - Assignable global start/stop, stop-only and microphone-mute shortcuts, with conflict
   detection. Defaults: Ctrl+Shift+F9, Ctrl+Shift+F10 and Ctrl+Shift+M.
 - WASAPI system loopback or process-tree-only audio, plus a separate microphone.
-  Endpoint selectors, live gain and microphone mute; one mixed stereo AAC track.
+  Always-visible input/output endpoint selectors, live gain and microphone mute.
+  An explicit capture-only sound check drives dB-scaled meters before recording;
+  it never plays audio or writes a recording. Windows-default endpoints follow device
+  changes; explicitly selected endpoints remain fixed.
+  Application audio can target a different window from the recorded video.
+  Route the two sources into 1–5 independent stereo AAC tracks in the same MP4.
+  The suggested layout is track 1 mixed, track 2 system/game, track 3 microphone.
+  Extra tracks are mixes of these sources, not five independent application captures.
+  Editors must support importing multiple MP4 audio streams; some need explicit
+  track activation or demuxing. Most players play only the first track.
   Audio and microphone are off by default.
+- Optional CQP (QP 16–51, default 24) in Advanced settings. The selected encoder
+  must accept and report back the requested rate-control mode and QP. Unsupported
+  drivers fail with a clear error rather than silently changing modes. Bitrate mode
+  remains the default, and choosing a preset restores bitrate mode. CQP is a quality
+  control, not a guarantee of lower CPU/GPU use. Low-end starting point: Potato,
+  hardware encoding and only the audio tracks you need.
 
 ## Requirements
 

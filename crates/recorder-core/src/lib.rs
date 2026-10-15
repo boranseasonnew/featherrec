@@ -40,6 +40,28 @@ pub enum SystemAudio {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct AudioTrack {
+    pub system: bool,
+    pub microphone: bool,
+}
+impl Default for AudioTrack {
+    fn default() -> Self {
+        Self {
+            system: true,
+            microphone: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateControl {
+    #[default]
+    Bitrate,
+    Cqp,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AudioSettings {
     pub source: SystemAudio,
     pub output_device: String,
@@ -49,6 +71,10 @@ pub struct AudioSettings {
     pub system_gain: f32,
     pub microphone_gain: f32,
     pub bitrate: u32,
+    pub tracks: Vec<AudioTrack>,
+    /// Process handles must be reselected after restart, independently of video.
+    #[serde(skip)]
+    pub application: Option<WindowSelection>,
 }
 
 impl Default for AudioSettings {
@@ -62,6 +88,8 @@ impl Default for AudioSettings {
             system_gain: 1.0,
             microphone_gain: 1.0,
             bitrate: 192_000,
+            tracks: vec![AudioTrack::default()],
+            application: None,
         }
     }
 }
@@ -80,6 +108,8 @@ pub struct Settings {
     pub height: u32,
     pub fps: u32,
     pub bitrate: u32,
+    pub rate_control: RateControl,
+    pub qp: u32,
     pub encoder: EncoderPolicy,
     pub output_dir: PathBuf,
     pub preset: Preset,
@@ -102,6 +132,8 @@ impl Default for Settings {
             height: 720,
             fps: 30,
             bitrate: 4_000_000,
+            rate_control: RateControl::Bitrate,
+            qp: 24,
             encoder: EncoderPolicy::Hardware,
             output_dir: PathBuf::from("recordings"),
             preset: Preset::Potato,
@@ -119,6 +151,7 @@ impl Default for Settings {
 impl Settings {
     pub fn apply_preset(&mut self, preset: Preset) {
         self.preset = preset;
+        self.rate_control = RateControl::Bitrate;
         let (w, h, fps, bitrate) = match preset {
             Preset::Compact => (1280, 720, 30, 2_500_000),
             Preset::Potato => (1280, 720, 30, 4_000_000),
@@ -138,8 +171,18 @@ impl Settings {
         );
         ensure!(matches!(self.fps, 30 | 60), "Choose 30 or 60 FPS");
         ensure!(
-            self.audio.source != SystemAudio::Application || self.window.is_some(),
+            self.audio.source != SystemAudio::Application
+                || self.audio.application.is_some()
+                || self.window.is_some(),
             "Select a window before using application-only audio"
+        );
+        ensure!(
+            (1..=5).contains(&self.audio.tracks.len()),
+            "Choose between one and five audio tracks"
+        );
+        ensure!(
+            (16..=51).contains(&self.qp),
+            "CQP must be between 16 and 51"
         );
         ensure!(
             [96_000, 128_000, 192_000, 256_000].contains(&self.audio.bitrate),
@@ -255,6 +298,36 @@ impl PressureMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_track_limits_cqp_and_independent_audio_application() {
+        let mut settings = Settings::default();
+        settings.audio.tracks.clear();
+        assert!(settings.validate().is_err());
+        settings.audio.tracks = vec![AudioTrack::default(); 5];
+        settings.rate_control = RateControl::Cqp;
+        settings.qp = 24;
+        settings.validate().unwrap();
+        settings.audio.tracks.push(AudioTrack::default());
+        assert!(settings.validate().is_err());
+        settings.audio.tracks.pop();
+        settings.qp = 52;
+        assert!(settings.validate().is_err());
+        settings.qp = 24;
+        settings.audio.source = SystemAudio::Application;
+        assert!(settings.validate().is_err());
+        settings.audio.application = Some(WindowSelection {
+            handle: 1,
+            process: 2,
+            title: "Game".into(),
+        });
+        settings.validate().unwrap();
+        let restored: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert!(restored.audio.application.is_none());
+        assert_eq!(restored.audio.tracks.len(), 5);
+        assert_eq!(restored.rate_control, RateControl::Cqp);
+    }
 
     #[test]
     fn presets_are_valid_and_preserve_user_output() {

@@ -5,6 +5,7 @@
 /recordings/
 /validation/
 *.mp4
+!crates/recording-windows/tests/fixtures/video.mp4
 *.partial.mp4
 *.recording.json
 *.zip

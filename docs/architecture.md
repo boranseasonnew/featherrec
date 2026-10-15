@@ -132,6 +132,25 @@ report writing behind an explicit unlock. Output verification cannot be disabled
 
 ## References
 
+Audio output consists of 1–5 bounded per-track PCM writers. System/application and
+microphone samples share the video origin, then route to each track independently.
+Finalization copies compressed video and encodes each WAV to a separate AAC stream;
+every stream must be present and decodable before the file is promoted. Temporary
+PCM uses approximately 11 MiB/minute per selected track. More tracks increase disk
+I/O and finalization work. A file-only CI fixture checks one and five audio streams.
+It never renders sound to the desktop.
+
+An explicit audio-preview worker opens capture endpoints only, reads bounded packets
+and publishes decaying peaks without files or playback. It stops when source settings
+change or recording begins. Empty endpoint IDs follow the Windows console default
+device, checked once per second and on capture failure; explicit IDs stay fixed.
+An independent, transient window selection can supply process audio while recording
+a monitor. No process identifiers are restored across application restarts.
+
+CQP uses the selected transform's ICodecAPI before BeginWriting: quality mode plus
+AVEncVideoEncodeQP. Both values must read back correctly; unsupported or ignored
+properties cause initialization failure. No claim is made that CQP improves speed.
+
 - [windows-capture source and MIT license](https://github.com/NiiightmareXD/windows-capture)
 - [Media Foundation Sink Writer](https://learn.microsoft.com/en-us/windows/win32/medfound/sink-writer)
 - [Tracked sample allocator ownership](https://learn.microsoft.com/en-us/windows/win32/api/mfidl/nf-mfidl-imftrackedsample-setallocator)

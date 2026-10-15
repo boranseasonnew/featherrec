@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use recorder_core::{EncoderPolicy, Settings};
+use recorder_core::{EncoderPolicy, RateControl, Settings};
 use std::{
     os::windows::ffi::OsStrExt,
     path::Path,
@@ -14,6 +14,7 @@ use windows::{
         Foundation::E_NOTIMPL,
         Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D},
         Media::MediaFoundation::*,
+        System::Variant::VARIANT,
     },
     core::{GUID, Interface, PCWSTR, implement},
 };
@@ -142,6 +143,7 @@ impl Encoder {
             let ex: IMFSinkWriterEx = writer.cast()?;
             let mut name = String::from("Media Foundation H.264 (unidentified)");
             let mut hardware = false;
+            let mut cqp_configured = false;
             for index in 0..16 {
                 let mut category = GUID::zeroed();
                 let mut transform = None;
@@ -151,10 +153,41 @@ impl Encoder {
                 {
                     break;
                 }
-                let Some(attrs) = transform.and_then(|t| t.GetAttributes().ok()) else {
+                let Some(transform) = transform else {
+                    continue;
+                };
+                let Some(attrs) = transform.GetAttributes().ok() else {
                     continue;
                 };
                 if category == MFT_CATEGORY_VIDEO_ENCODER {
+                    if settings.rate_control == RateControl::Cqp {
+                        let codec: ICodecAPI = transform.cast().context(
+                            "Bu kodlayıcı CQP ayarlarını sunmuyor. Bit hızı modunu seç.",
+                        )?;
+                        let configure = || -> Result<()> {
+                            codec.IsSupported(&CODECAPI_AVEncCommonRateControlMode)?;
+                            codec.IsSupported(&CODECAPI_AVEncVideoEncodeQP)?;
+                            codec.SetValue(
+                                &CODECAPI_AVEncCommonRateControlMode,
+                                &VARIANT::from(3u32),
+                            )?;
+                            codec.SetValue(
+                                &CODECAPI_AVEncVideoEncodeQP,
+                                &VARIANT::from(u64::from(settings.qp)),
+                            )?;
+                            let mode = u32::try_from(
+                                &codec.GetValue(&CODECAPI_AVEncCommonRateControlMode)?,
+                            )?;
+                            let qp = u64::try_from(&codec.GetValue(&CODECAPI_AVEncVideoEncodeQP)?)?;
+                            ensure!(
+                                mode == 3 && qp == u64::from(settings.qp),
+                                "Kodlayıcı istenen CQP değerini kabul etmedi"
+                            );
+                            Ok(())
+                        };
+                        configure().context("Seçilen kodlayıcı bu CQP ayarını desteklemiyor. Bit hızı modunu seç veya GPU sürücüsünü kontrol et.")?;
+                        cqp_configured = true;
+                    }
                     name = attr_string(&attrs, &MFT_FRIENDLY_NAME_Attribute).unwrap_or(name);
                     hardware = attr_string(&attrs, &MFT_ENUM_HARDWARE_URL_Attribute)
                         .is_some_and(|url| !url.is_empty());
@@ -168,6 +201,10 @@ impl Encoder {
                     attrs.SetUINT32(&MF_XVP_DISABLE_FRC, 1)?;
                 }
             }
+            ensure!(
+                settings.rate_control != RateControl::Cqp || cqp_configured,
+                "CQP destekleyen bir kodlayıcı bulunamadı. Bit hızı modunu seç."
+            );
             if settings.encoder == EncoderPolicy::Hardware && !hardware {
                 bail!(
                     "Windows did not identify the selected H.264 encoder as hardware ({name}). Choose 'Allow software' explicitly to continue; CPU usage may increase."
